@@ -1,0 +1,149 @@
+name: verify-python (reusable)
+
+# Receta de verificación reutilizable para proyectos Python de la flota Watson.
+# Solo la capa STACK-AGNÓSTICA de seguridad (secrets + SAST + dep audit). Los tests
+# con bench/MariaDB/Redis (Frappe/ERPNext) o cualquier servicio quedan en el workflow
+# propio de cada proyecto (project-specific: `bench run-tests` es el runner del framework
+# y necesita contenedores).
+#
+# Uso desde un repo:
+#   jobs:
+#     verify:
+#       uses: dwadrian/watson-ci/.github/workflows/verify-python.yml@v1
+# NO pasar `secrets: inherit`: esta receta no usa secretos y es superficie de ataque innecesaria.
+#
+# DIVERGENCIA DELIBERADA vs verify-php/node: pip-audit NO expone severidad (pypa/pip-audit#654;
+# el JSON no trae campo severity). Por eso, para Python, `blocking=true` = falla ante CUALQUIER
+# vuln conocida (no hay split high/critical fiable). `blocking=false` = advisory. Es la única
+# semántica honesta con la herramienta oficial.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Versión de Python (pip-audit requiere >=3.10)'
+        type: string
+        default: '3.12'
+      blocking:
+        description: 'true = falla ante cualquier vuln de dependencia; false = advisory (no bloquea)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: verify-python-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 🔒 secrets + SAST + deps (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Instalar herramientas (versiones pineadas)
+        run: pip install semgrep==1.157.0 pip-audit==2.10.1
+
+      - name: 🔑 Secrets scan (bloquea siempre)
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+
+      - name: 🛡️ SAST high/critical
+        run: |
+          if [ "${{ inputs.blocking }}" = "true" ]; then FLAG="--error"; else FLAG=""; fi
+          semgrep scan --config "p/security-audit" --config "p/python" --severity ERROR $FLAG --quiet --disable-version-check --timeout 120 .
+
+      - name: 🟡 SAST medio/bajo (advisory)
+        if: always()
+        run: semgrep scan --config "p/security-audit" --config "p/python" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+
+      # Dep-audit con pip-audit (PyPA oficial). Gate por JSON, no por texto humano.
+      # Equivalente al --ignore-scripts de npm: --no-deps / --locked auditan SIN instalar
+      # (no se ejecuta setup.py / build-backend de ninguna dependencia). Solo se auditan
+      # fuentes TOTALMENTE PINEADAS (requirements*.txt, pylock.toml). Un pyproject.toml sin
+      # lockfile requeriría CONSTRUIR el proyecto — se rehúsa por seguridad y se avisa.
+      - name: 📦 pip-audit (bloquea según `blocking`)
+        run: |
+          # set -uo (sin -e, a diferencia de php/node): audit_source retorna no-cero a
+          # propósito (vuln / JSON inválido) y se acumula en rc_total; con -e abortaría antes.
+          set -uo pipefail
+          blocking="${{ inputs.blocking }}"
+
+          # Descubrimiento de manifiestos auditables SIN construir.
+          reqfiles=()
+          while IFS= read -r f; do reqfiles+=("$f"); done < <(find . -maxdepth 2 -name 'requirements*.txt' -not -path '*/.git/*' | sort)
+          has_pylock=false; [ -f pylock.toml ] && has_pylock=true
+          has_pyproject=false; [ -f pyproject.toml ] && has_pyproject=true
+
+          if [ "${#reqfiles[@]}" -eq 0 ] && [ "$has_pylock" = "false" ]; then
+            if [ "$has_pyproject" = "true" ]; then
+              echo "::warning::Hay pyproject.toml pero ningún lockfile pineado (requirements*.txt / pylock.toml)."
+              echo "::warning::Auditar pyproject requeriría CONSTRUIR el proyecto (ejecutar su build-backend) — se omite por seguridad."
+              echo "::warning::Genera un lockfile: 'pip lock' (PEP 751 -> pylock.toml) o pip-compile -> requirements.txt."
+              exit 0
+            fi
+            echo "sin manifiesto Python (requirements*.txt / pylock.toml / pyproject.toml) — skip pip-audit."
+            exit 0
+          fi
+
+          # Auditoría fail-closed sobre UNA fuente. JSON inválido/ausente = tool falló => decide `blocking`.
+          audit_source() {
+            local label="$1"; shift
+            local out="/tmp/pipaudit_$$.json"
+            echo "── auditando: $label"
+            timeout 300 pip-audit "$@" --format=json > "$out" 2>/tmp/pipaudit_err_$$.txt
+            local rc=$?
+            if ! jq -e . "$out" >/dev/null 2>&1; then
+              echo "::error::pip-audit no produjo JSON válido para '$label' (rc=$rc) — tool/red falló o deps sin pinear."
+              cat /tmp/pipaudit_err_$$.txt || true
+              if [ "$blocking" = "true" ]; then return 1; fi
+              echo "::warning::advisory: no se pudo auditar '$label' (no bloquea)."
+              return 0
+            fi
+            local vulns
+            vulns=$(jq '[.. | objects | select(has("vulns")) | .vulns[]?] | length' "$out")
+            echo "vulns conocidas en '$label': $vulns"
+            jq '[.. | objects | select(has("vulns")) | select((.vulns|length)>0) | {name, version, ids: [.vulns[].id]}]' "$out"
+            if [ "$vulns" -gt 0 ]; then
+              if [ "$blocking" = "true" ]; then
+                echo "::error::'$label' tiene $vulns vuln(s) conocida(s) — bloqueado (pip-audit no da severidad; ver #654)."
+                return 1
+              fi
+              echo "::warning::advisory: '$label' tiene $vulns vuln(s) (no bloquea)."
+            fi
+            return 0
+          }
+
+          # --strict: enforce nativo de "totalmente pineadas". Una entrada URL/VCS/editable/
+          # sin-pinear que pip-audit no puede auditar se vuelve error fatal (sin JSON =>
+          # fail-closed) en vez de saltarse en SILENCIO y reportar verde-falso. Cierra el
+          # silent-coverage-gap con una flag, sin bash extra. blocking=false sigue degradando
+          # a advisory. Un requirements 100% == no tiene skips => --strict es no-op.
+          rc_total=0
+          if [ "$has_pylock" = "true" ]; then
+            audit_source "pylock.toml" --locked --strict || rc_total=1
+          fi
+          for f in "${reqfiles[@]}"; do
+            audit_source "$f" --no-deps --strict -r "$f" || rc_total=1
+          done
+
+          if [ "$rc_total" -ne 0 ]; then
+            echo "::error::pip-audit falló (ver arriba)."
+            exit 1
+          fi
+          echo "✅ pip-audit OK."
+
+      - name: 📋 Summary
+        if: always()
+        # block scalar (run: |) — el string contiene ": " y en un scalar plano YAML lo
+        # interpretaría como mapping y NO parsearía el workflow.
+        run: |
+          echo "verify-python@v1 — secrets + SAST + pip-audit (blocking=${{ inputs.blocking }}). Nota: pip-audit no filtra por severidad; blocking=true bloquea cualquier vuln." >> "$GITHUB_STEP_SUMMARY"
