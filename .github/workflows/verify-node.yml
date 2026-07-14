@@ -1,0 +1,95 @@
+name: verify-node (reusable)
+
+# Receta de verificación reutilizable para proyectos Node/TS de la flota Watson.
+# Solo la capa STACK-AGNÓSTICA de seguridad (secrets + SAST + npm audit). Los tests
+# con servicios/DB quedan en el workflow propio de cada proyecto.
+#
+# Uso desde un repo:
+#   jobs:
+#     verify:
+#       uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Versión de Node'
+        type: string
+        default: '20'
+      blocking:
+        description: 'true = falla el check en hallazgos high/critical; false = advisory'
+        type: boolean
+        default: true
+      test-command:
+        description: 'Comando de test opcional (vacío = no corre tests aquí)'
+        type: string
+        default: ''
+
+concurrency:
+  group: verify-node-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 🔒 secrets + SAST + deps (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python (para Semgrep)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Instalar Semgrep (versión pineada)
+        run: pip install semgrep==1.157.0
+
+      - name: 🔑 Secrets scan (bloquea siempre)
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+
+      - name: 🛡️ SAST high/critical
+        run: |
+          if [ "${{ inputs.blocking }}" = "true" ]; then FLAG="--error"; else FLAG=""; fi
+          semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity ERROR $FLAG --quiet --disable-version-check --timeout 120 .
+
+      - name: 🟡 SAST medio/bajo (advisory)
+        if: always()
+        run: semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+
+      - name: Setup Node
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # --ignore-scripts: NO ejecutar lifecycle scripts de dependencias (una dep maliciosa
+      # correría con el env del job). El audit lee el lockfile, no necesita build.
+      - name: 📦 npm audit (bloquea high/critical)
+        run: |
+          set -euo pipefail
+          if [ ! -f package.json ]; then echo "sin package.json — skip npm audit"; exit 0; fi
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci --ignore-scripts --no-audit --no-fund
+          else
+            echo "sin lockfile — npm install (reproducibilidad reducida)"
+            npm install --ignore-scripts --no-audit --no-fund
+          fi
+          if [ "${{ inputs.blocking }}" = "true" ]; then
+            npm audit --audit-level=high        # bloquea (exit != 0 en high/critical)
+          else
+            npm audit --audit-level=critical || true   # advisory: reporta, no bloquea
+          fi
+
+      - name: 🧪 Tests (opcional, solo si se pasa test-command)
+        if: ${{ inputs.test-command != '' }}
+        env:
+          TEST_CMD: ${{ inputs.test-command }}
+        run: bash -c "$TEST_CMD"
+
+      - name: 📋 Summary
+        if: always()
+        run: echo "verify-node@v1 — secrets + SAST + npm audit (blocking=${{ inputs.blocking }})." >> "$GITHUB_STEP_SUMMARY"

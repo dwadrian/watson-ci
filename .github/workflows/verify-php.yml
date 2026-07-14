@@ -1,0 +1,99 @@
+name: verify-php (reusable)
+
+# Receta de verificación reutilizable para proyectos PHP/Laravel de la flota Watson.
+# Semilla: coffee_framework/security-gate.yml (probado). Solo la capa STACK-AGNÓSTICA de
+# seguridad (secrets + SAST + dep audit) que NO necesita DB. Los tests con base de datos
+# quedan en el workflow propio de cada proyecto (son project-specific).
+#
+# Uso desde un repo:
+#   jobs:
+#     verify:
+#       uses: dwadrian/watson-ci/.github/workflows/verify-php.yml@v1
+# NO pasar `secrets: inherit`: esta receta no usa secretos y es un repo público —
+# heredarlos sería superficie de ataque innecesaria.
+
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: 'Versión de PHP'
+        type: string
+        default: '8.3'
+      blocking:
+        description: 'true = falla el check en hallazgos high/critical; false = advisory (no bloquea)'
+        type: boolean
+        default: true
+
+# Un push que cancela corridas viejas de la misma ref (no se acumulan minutos).
+concurrency:
+  group: verify-php-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read   # mínimo; la receta solo lee el código
+
+jobs:
+  verify:
+    name: 🔒 secrets + SAST + deps (PHP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # tope duro: ninguna corrida puede irse de largo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python (para Semgrep)
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Instalar Semgrep (versión pineada)
+        run: pip install semgrep==1.157.0
+
+      # Rulesets community pineados (p/...), NUNCA --config auto (que hace lookup de red
+      # gated por login Pro). --disable-version-check evita llamada de red extra.
+      - name: 🔑 Secrets scan (bloquea siempre)
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+
+      - name: 🛡️ SAST high/critical
+        run: |
+          if [ "${{ inputs.blocking }}" = "true" ]; then FLAG="--error"; else FLAG=""; fi
+          semgrep scan --config "p/security-audit" --config "p/php" --severity ERROR $FLAG --quiet --disable-version-check --timeout 120 .
+
+      - name: 🟡 SAST medio/bajo (advisory)
+        if: always()
+        run: semgrep scan --config "p/security-audit" --config "p/php" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
+        with:
+          php-version: ${{ inputs.php-version }}
+          tools: composer:2   # composer pineado (no depender del default del runner)
+          coverage: none
+
+      # Gate por EXIT-CODE + JSON, no por grep de tabla humana. Si el audit no produce
+      # JSON válido (herramienta/red falló) => RED, nunca verde-falso. install SIN `|| true`.
+      - name: 📦 composer audit (bloquea high/critical)
+        run: |
+          set -euo pipefail
+          if [ ! -f composer.json ]; then echo "sin composer.json — skip composer audit"; exit 0; fi
+          composer install --no-scripts --no-interaction --no-progress --prefer-dist
+          composer audit --no-interaction --abandoned=ignore --format=json > /tmp/audit.json || true
+          if ! jq -e . /tmp/audit.json >/dev/null 2>&1; then
+            echo "::error::composer audit no produjo JSON válido (la herramienta falló) — bloqueando por seguridad."
+            cat /tmp/audit.json || true
+            exit 1
+          fi
+          TOTAL=$(jq '[.advisories[]?[]?] | length' /tmp/audit.json)
+          HIGHCRIT=$(jq '[.advisories[]?[]? | select((.severity // "unknown") | ascii_downcase | test("high|critical"))] | length' /tmp/audit.json)
+          UNKNOWN=$(jq '[.advisories[]?[]? | select((.severity // "unknown") == "unknown")] | length' /tmp/audit.json)
+          echo "advisories: $TOTAL total · $HIGHCRIT high/critical · $UNKNOWN sin severidad"
+          jq '.advisories' /tmp/audit.json
+          if [ "${{ inputs.blocking }}" = "true" ] && [ "$HIGHCRIT" -gt 0 ]; then
+            echo "::error::Dependencias PHP high/critical: $HIGHCRIT — bloqueado."
+            exit 1
+          fi
+          echo "✅ composer audit OK (medium/low/sin-severidad no bloquean; revisar los $UNKNOWN sin severidad)."
+
+      - name: 📋 Summary
+        if: always()
+        run: echo "verify-php@v1 — secrets + SAST + composer audit (blocking=${{ inputs.blocking }})." >> "$GITHUB_STEP_SUMMARY"
