@@ -50,8 +50,13 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
 
-      - name: Instalar herramientas (versiones pineadas)
-        run: pip install semgrep==1.157.0 pip-audit==2.10.1
+      # pipx = cada CLI en su propio venv aislado. semgrep y pip-audit tienen deps
+      # transitivas en conflicto y NO conviven en un mismo `pip install` (ResolutionImpossible).
+      # pipx (pre-instalado en el runner) es la herramienta idiomática para esto.
+      - name: Instalar herramientas (versiones pineadas, aisladas)
+        run: |
+          pipx install semgrep==1.157.0
+          pipx install pip-audit==2.10.1
 
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
