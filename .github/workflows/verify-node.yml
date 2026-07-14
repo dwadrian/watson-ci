@@ -1,13 +1,18 @@
 name: verify-node (reusable)
 
 # Receta de verificación reutilizable para proyectos Node/TS de la flota Watson.
-# Solo la capa STACK-AGNÓSTICA de seguridad (secrets + SAST + npm audit). Los tests
-# con servicios/DB quedan en el workflow propio de cada proyecto.
+# Solo la capa STACK-AGNÓSTICA de seguridad (secrets + SAST + npm audit).
 #
-# Uso desde un repo:
+# Uso desde un repo (v2 — BREAKING vs v1: sin input `blocking`):
+#   on:
+#     pull_request:
+#     push: { branches: [main] }
 #   jobs:
 #     verify:
-#       uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v1
+#       uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v2
+#
+# MODELO v2: secrets siempre bloquea · SAST bloquea lo NUEVO vs baseline · npm audit siempre
+# bloquea high/critical.
 
 on:
   workflow_call:
@@ -16,10 +21,6 @@ on:
         description: 'Versión de Node'
         type: string
         default: '20'
-      blocking:
-        description: 'true = falla el check en hallazgos high/critical; false = advisory'
-        type: boolean
-        default: true
       test-command:
         description: 'Comando de test opcional (vacío = no corre tests aquí)'
         type: string
@@ -40,6 +41,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
+          filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
 
       - name: Setup Python (para Semgrep)
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
@@ -52,10 +56,36 @@ jobs:
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
 
-      - name: 🛡️ SAST high/critical
+      - name: 🛡️ SAST high/critical (diff-aware)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "${{ inputs.blocking }}" = "true" ]; then FLAG="--error"; else FLAG=""; fi
-          semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity ERROR $FLAG --quiet --disable-version-check --timeout 120 .
+          set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
+          CONFIGS='--config p/security-audit --config p/javascript --config p/typescript'
+          COMMON='--severity ERROR --quiet --disable-version-check --timeout 120'
+
+          BASELINE=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASELINE=$(git merge-base "$BASE_SHA" HEAD 2>/dev/null || true)
+          elif [ "$EVENT_NAME" = "push" ]; then
+            case "$BEFORE_SHA" in
+              *[!0]*) git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null && BASELINE="$BEFORE_SHA" || true ;;
+            esac
+          fi
+
+          if [ -n "$BASELINE" ]; then
+            echo "diff-aware: bloqueando hallazgos ERROR NUEVOS vs $BASELINE"
+            semgrep scan $CONFIGS $COMMON --baseline-commit "$BASELINE" --error .
+          else
+            echo "::warning::sin baseline (primer push / force-push / historia no relacionada) — full scan ADVISORY."
+            if semgrep scan $CONFIGS $COMMON --error .; then rc=0; else rc=$?; fi
+            if   [ "$rc" -eq 0 ]; then echo "✅ sin hallazgos ERROR."
+            elif [ "$rc" -eq 1 ]; then echo "::warning::hallazgos ERROR (advisory: sin baseline no separamos nuevo de deuda)."
+            else echo "::error::semgrep falló (rc=$rc) — fail-closed."; exit 1
+            fi
+          fi
 
       - name: 🟡 SAST medio/bajo (advisory)
         if: always()
@@ -66,9 +96,9 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
 
-      # --ignore-scripts: NO ejecutar lifecycle scripts de dependencias (una dep maliciosa
-      # correría con el env del job). El audit lee el lockfile, no necesita build.
-      - name: 📦 npm audit (bloquea high/critical)
+      # --ignore-scripts: NO ejecutar lifecycle scripts de deps. El audit lee el lockfile.
+      # npm audit sale != 0 ante high/critical O ante error de red => bloquea (fail-closed).
+      - name: 📦 npm audit (bloquea high/critical SIEMPRE)
         run: |
           set -euo pipefail
           if [ ! -f package.json ]; then echo "sin package.json — skip npm audit"; exit 0; fi
@@ -78,11 +108,7 @@ jobs:
             echo "sin lockfile — npm install (reproducibilidad reducida)"
             npm install --ignore-scripts --no-audit --no-fund
           fi
-          if [ "${{ inputs.blocking }}" = "true" ]; then
-            npm audit --audit-level=high        # bloquea (exit != 0 en high/critical)
-          else
-            npm audit --audit-level=critical || true   # advisory: reporta, no bloquea
-          fi
+          npm audit --audit-level=high
 
       - name: 🧪 Tests (opcional, solo si se pasa test-command)
         if: ${{ inputs.test-command != '' }}
@@ -92,4 +118,5 @@ jobs:
 
       - name: 📋 Summary
         if: always()
-        run: echo "verify-node@v1 — secrets + SAST + npm audit (blocking=${{ inputs.blocking }})." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "verify-node@v2 — secrets(siempre) + SAST(diff-aware) + npm audit(siempre high/crit)." >> "$GITHUB_STEP_SUMMARY"
