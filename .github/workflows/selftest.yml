@@ -1,0 +1,21 @@
+name: selftest (canario de recetas)
+
+# Canario manual: corre las 3 recetas del COMMIT ACTUAL (referencia local `./`)
+# sobre este mismo repo (trivial: sin manifiestos => los dep-audits hacen skip
+# limpio; secrets + SAST barren los yml). Valida que los pines de actions y los
+# steps arrancan de punta a punta ANTES de mover el alias v2 a la flota.
+#
+# Uso: gh workflow run selftest.yml (workflow_dispatch)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    uses: ./.github/workflows/verify-node.yml
+  php:
+    uses: ./.github/workflows/verify-php.yml
+  python:
+    uses: ./.github/workflows/verify-python.yml
