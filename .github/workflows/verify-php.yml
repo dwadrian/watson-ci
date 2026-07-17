@@ -45,13 +45,13 @@ jobs:
       # fetch-depth: 0 => historia completa. Semgrep --baseline-commit necesita que el
       # commit baseline exista localmente para el diff. Con depth:1 no hay merge-base.
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           filter: blob:none   # grafo completo para merge-base; blobs on-demand (barato en repos grandes)
 
       - name: Setup Python (para Semgrep)
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -113,12 +113,19 @@ jobs:
           coverage: none
 
       # Gate por EXIT-CODE + JSON, no por grep de tabla humana. JSON inválido => RED (fail-closed).
+      # v2.0.1: audit --locked lee composer.lock directo, SIN composer install — más rápido,
+      # cero lifecycle/plugins, y no truena con locks legacy incompatibles con el PHP del runner
+      # (caso Laravel 4.2: install fallaba por plataforma antes de llegar al audit).
+      # composer.json sin lock => RED (el lock es obligatorio para auditar lo que se despliega).
       - name: 📦 composer audit (bloquea high/critical SIEMPRE)
         run: |
           set -euo pipefail
           if [ ! -f composer.json ]; then echo "sin composer.json — skip composer audit"; exit 0; fi
-          composer install --no-scripts --no-plugins --no-interaction --no-progress --prefer-dist
-          composer audit --no-interaction --abandoned=ignore --format=json > /tmp/audit.json || true
+          if [ ! -f composer.lock ]; then
+            echo "::error::composer.json sin composer.lock — sin lock no hay audit reproducible (commitear el lock)."
+            exit 1
+          fi
+          composer audit --locked --no-interaction --abandoned=ignore --format=json > /tmp/audit.json || true
           if ! jq -e . /tmp/audit.json >/dev/null 2>&1; then
             echo "::error::composer audit no produjo JSON válido (la herramienta falló) — bloqueando por seguridad."
             cat /tmp/audit.json || true
