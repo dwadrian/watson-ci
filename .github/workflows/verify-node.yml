@@ -17,6 +17,10 @@ name: verify-node (reusable)
 on:
   workflow_call:
     inputs:
+      gated-branches:
+        description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
+        type: string
+        default: ''
       node-version:
         description: 'Versión de Node'
         type: string
@@ -61,10 +65,29 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          GATED_EXTRA: ${{ inputs.gated-branches }}
         run: |
           set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
           CONFIGS='--config p/security-audit --config p/javascript --config p/typescript'
           COMMON='--severity ERROR --quiet --disable-version-check --timeout 120'
+
+          # --- branch-aware (v2.2): push/PR hacia rama GATEADA => full-estricto sin baseline.
+          # "El costo donde el riesgo": la deuda vieja TAMBIEN bloquea camino a prod.
+          TARGET_BRANCH="$BASE_REF"; [ -z "$TARGET_BRANCH" ] && TARGET_BRANCH="$REF_NAME"
+          GATED=false
+          set -f  # sin pathname-expansion: un archivo app_prod en el repo NO debe comerse el patrón *_prod (sec LOW 2026-07-18)
+          for pat in main master *_prod $GATED_EXTRA; do
+            # shellcheck disable=SC2254
+            case "$TARGET_BRANCH" in $pat) GATED=true ;; esac
+          done
+          set +f
+          if [ "$GATED" = true ]; then
+            echo "rama gateada ($TARGET_BRANCH): SAST FULL-ESTRICTO (sin baseline — deuda tambien bloquea)."
+            semgrep scan $CONFIGS $COMMON --error .
+            exit 0
+          fi
 
           BASELINE=""
           if [ "$EVENT_NAME" = "pull_request" ]; then
