@@ -28,6 +28,10 @@ on:
         description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
         type: string
         default: ''
+      strict-on-gated:
+        description: 'false = NUNCA full-estricto en rama gateada (siempre diff-aware). Para security-tools cuyo código inseguro es by-design (mcp) o repos EOL. Default true.'
+        type: boolean
+        default: true
       php-version:
         description: 'Versión de PHP'
         type: string
@@ -78,6 +82,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           REF_NAME: ${{ github.ref_name }}
           GATED_EXTRA: ${{ inputs.gated-branches }}
+          GATED_STRICT: ${{ inputs.strict-on-gated }}
         run: |
           set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
           CONFIGS='--config p/security-audit --config p/php'
@@ -93,11 +98,13 @@ jobs:
             case "$TARGET_BRANCH" in $pat) GATED=true ;; esac
           done
           set +f
-          if [ "$GATED" = true ]; then
+          if [ "$GATED" = true ] && [ "$GATED_STRICT" != "false" ]; then
             echo "rama gateada ($TARGET_BRANCH): SAST FULL-ESTRICTO (sin baseline — deuda tambien bloquea)."
             semgrep scan $CONFIGS $COMMON --error .
             exit 0
           fi
+          [ "$GATED" = true ] && echo "rama gateada pero strict-on-gated=false (opt-out: security-tool/EOL) — sigue diff-aware."
+
 
           # --- resolver baseline (ramas feature: diff-aware como siempre) ---
           BASELINE=""
