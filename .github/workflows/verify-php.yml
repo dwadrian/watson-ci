@@ -38,7 +38,7 @@ on:
         default: '8.3'
 
 concurrency:
-  group: verify-php-${{ github.ref }}
+  group: verify-php-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

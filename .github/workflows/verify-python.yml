@@ -36,7 +36,7 @@ on:
         default: '3.12'
 
 concurrency:
-  group: verify-python-${{ github.ref }}
+  group: verify-python-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

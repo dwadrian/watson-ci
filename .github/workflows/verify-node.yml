@@ -35,7 +35,7 @@ on:
         default: ''
 
 concurrency:
-  group: verify-node-${{ github.ref }}
+  group: verify-node-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
