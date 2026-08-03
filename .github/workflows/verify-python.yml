@@ -68,12 +68,53 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
 
-      # pipx = cada CLI en su venv aislado (semgrep y pip-audit tienen deps transitivas en
-      # conflicto y NO conviven en un mismo pip install => ResolutionImpossible).
-      - name: Instalar herramientas (versiones pineadas, aisladas)
+      # DOS VENVS EXPLICITOS, no pipx (v3, 2026-08-03).
+      #
+      # El aislamiento sigue siendo obligatorio: semgrep y pip-audit tienen deps transitivas en
+      # CONFLICTO y no conviven en un mismo `pip install` (ResolutionImpossible, cazado por el
+      # piloto de makro). Antes se lograba con pipx.
+      #
+      # Se cambia a venvs porque `--require-hashes` necesita instalar DESDE un requirements con
+      # el cierre transitivo completo (`-r tools/*.txt`), y mezclar eso con `pipx install
+      # <paquete>` es ambiguo: pipx quiere instalar el paquete nombrado, el archivo ya lo trae.
+      # La forma con venv + pip se verifico localmente (`pip install --require-hashes --no-deps
+      # -r` resuelve las 28/66 deps del archivo); la de pipx no se pudo verificar, y publicar
+      # una forma sin verificar en el repo del que dependen 16 repos no es aceptable.
+      - name: Instalar herramientas (pineadas por hash, aisladas)
         run: |
-          pipx install semgrep==1.157.0
-          pipx install pip-audit==2.10.1
+          set -euo pipefail
+          python -m venv /tmp/venv-semgrep
+          /tmp/venv-semgrep/bin/pip install --quiet --require-hashes --no-deps -r tools/requirements-semgrep.txt
+          python -m venv /tmp/venv-pipaudit
+          /tmp/venv-pipaudit/bin/pip install --quiet --require-hashes --no-deps -r tools/requirements-pip-audit.txt
+          # Al PATH para que los pasos siguientes invoquen `semgrep` y `pip-audit` sin cambios.
+          echo "/tmp/venv-semgrep/bin" >> "$GITHUB_PATH"
+          echo "/tmp/venv-pipaudit/bin" >> "$GITHUB_PATH"
+          /tmp/venv-semgrep/bin/semgrep --version
+          /tmp/venv-pipaudit/bin/pip-audit --version
+
+      # Visibilidad del alcance real del scan (v3, 2026-08-03).
+      #
+      # `semgrep scan .` honra el `.semgrepignore` del repo ESCANEADO. Eso es correcto por
+      # diseño —un repo debe poder excluir vendor/ o dumps— pero significa que **el alcance del
+      # gate lo controla el repo auditado**, y un PR puede ampliar ese archivo y quedar cubierto
+      # por ese mismo PR. En la flota ya hay dos, ambos justificados, pero uno excluye `.claude/`
+      # y `.githooks/`: justo donde vive código ejecutable.
+      #
+      # No se bloquea: prohibirlo rompería exclusiones legítimas. Se hace VISIBLE, que es lo que
+      # faltaba — hoy nadie puede saber, leyendo un run verde, cuántos archivos se escanearon.
+      - name: 👁️ Alcance del scan (.semgrepignore efectivo)
+        run: |
+          set -uo pipefail
+          if [ -f .semgrepignore ]; then
+            echo "::warning::Este repo tiene .semgrepignore — el alcance del gate esta acotado por el repo auditado."
+            echo "── .semgrepignore ──"; cat .semgrepignore
+          else
+            echo "sin .semgrepignore (se usan las exclusiones por defecto de semgrep)"
+          fi
+          TRACKED=$(git ls-files | wc -l | tr -d ' ')
+          echo "archivos rastreados por git: $TRACKED"
+          echo "  (si el numero escaneado por semgrep es mucho menor, el ignore esta comiendose el gate)"
 
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .

@@ -73,10 +73,37 @@ jobs:
           python-version: '3.12'
 
       - name: Instalar Semgrep (versión pineada)
-        run: pip install semgrep==1.157.0
+        # --require-hashes: TODAS las deps transitivas pineadas por hash (tools/requirements-semgrep.txt).
+        # Antes solo el binario estaba pineado y sus ~30 deps se resolvian en cada corrida; una
+        # sola comprometida ejecuta codigo en el job, con el fuente privado del caller ya en
+        # disco. --no-deps porque el archivo ya trae el cierre transitivo completo.
+        run: pip install --require-hashes --no-deps -r tools/requirements-semgrep.txt
 
       # Secrets: full scan, SIEMPRE bloquea. NO baseline (un secreto commiteado hace meses
       # sigue exigiendo rotación; no es "deuda tolerable").
+      # Visibilidad del alcance real del scan (v3, 2026-08-03).
+      #
+      # `semgrep scan .` honra el `.semgrepignore` del repo ESCANEADO. Eso es correcto por
+      # diseño —un repo debe poder excluir vendor/ o dumps— pero significa que **el alcance del
+      # gate lo controla el repo auditado**, y un PR puede ampliar ese archivo y quedar cubierto
+      # por ese mismo PR. En la flota ya hay dos, ambos justificados, pero uno excluye `.claude/`
+      # y `.githooks/`: justo donde vive código ejecutable.
+      #
+      # No se bloquea: prohibirlo rompería exclusiones legítimas. Se hace VISIBLE, que es lo que
+      # faltaba — hoy nadie puede saber, leyendo un run verde, cuántos archivos se escanearon.
+      - name: 👁️ Alcance del scan (.semgrepignore efectivo)
+        run: |
+          set -uo pipefail
+          if [ -f .semgrepignore ]; then
+            echo "::warning::Este repo tiene .semgrepignore — el alcance del gate esta acotado por el repo auditado."
+            echo "── .semgrepignore ──"; cat .semgrepignore
+          else
+            echo "sin .semgrepignore (se usan las exclusiones por defecto de semgrep)"
+          fi
+          TRACKED=$(git ls-files | wc -l | tr -d ' ')
+          echo "archivos rastreados por git: $TRACKED"
+          echo "  (si el numero escaneado por semgrep es mucho menor, el ignore esta comiendose el gate)"
+
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
 
