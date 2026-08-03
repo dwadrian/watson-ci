@@ -42,6 +42,16 @@ jobs:
     uses: ./.github/workflows/verify-php.yml
   python:
     uses: ./.github/workflows/verify-python.yml
+    with:
+      # Las 3 vulns de `mcp==1.23.3` en el cierre de semgrep. NO se pueden arreglar aqui:
+      # semgrep lo pinea EXACTO, asi que forzar una version mas nueva rompe su contrato.
+      # Se declaran UNA A UNA, no con un interruptor global, y se revisan en cada bump de
+      # semgrep — si el pin sube, esta linea se borra.
+      #
+      # Ojo al alcance: esto aplica SOLO al selftest de watson-ci, que se audita a si mismo.
+      # Ningun caller hereda estas excepciones; en un caller, tools/requirements-*.txt ni
+      # siquiera existe (la receta hace checkout del repo llamador, no de este).
+      pip-audit-ignore-vuln: 'PYSEC-2026-3481,PYSEC-2026-3482,PYSEC-2026-3483'
 
   # 2. Las recetas DECIDEN BIEN. Esto es lo que faltaba: "arranca" y "decide bien" son cosas
   #    distintas, y v2.2.0 cambio la segunda sin que nada lo verificara.

@@ -38,6 +38,10 @@ on:
         description: 'true = un proyecto SIN lockfile auditable pasa con WARN en vez de ROJO. Solo para repos donde las deps se gestionan fuera del repo. Default false.'
         type: boolean
         default: false
+      pip-audit-ignore-vuln:
+        description: 'IDs de vulnerabilidad (coma-separados) exentos, declarados UNO A UNO. Para deps pineadas exacto por una herramienta upstream que aun no las corrige. NO es un interruptor global.'
+        type: string
+        default: ''
 
 concurrency:
   group: verify-python-${{ github.workflow }}-${{ github.ref }}
@@ -181,6 +185,7 @@ jobs:
       - name: 📦 pip-audit (bloquea CUALQUIER vuln SIEMPRE)
         env:
           AUDIT_OPTIONAL: ${{ inputs.python-audit-optional }}
+          IGNORE_VULN: ${{ inputs.pip-audit-ignore-vuln }}
         run: |
           set -uo pipefail
 
@@ -227,24 +232,27 @@ jobs:
             exit 0
           fi
 
+          # Excepciones DECLARADAS UNA A UNA. Se construyen como array para que un id vacio o
+          # con espacios no se convierta en un argumento suelto que pip-audit malinterprete.
+          IGNORE_ARGS=()
+          if [ -n "${IGNORE_VULN:-}" ]; then
+            IFS=',' read -ra _ids <<< "$IGNORE_VULN"
+            for _id in "${_ids[@]}"; do
+              _id="$(echo "$_id" | tr -d '[:space:]')"
+              [ -n "$_id" ] && IGNORE_ARGS+=(--ignore-vuln "$_id")
+            done
+            echo "::warning::pip-audit con ${#IGNORE_ARGS[@]} excepcion(es) declarada(s): $IGNORE_VULN"
+          fi
+
           # Fail-closed sobre UNA fuente. JSON inválido/ausente = tool falló => RED.
           audit_source() {
             local label="$1"; shift
             local out="/tmp/pipaudit_$$.json"
             echo "── auditando: $label"
-            timeout 300 pip-audit "$@" --format=json > "$out" 2>/tmp/pipaudit_err_$$.txt
+            timeout 300 pip-audit "$@" "${IGNORE_ARGS[@]}" --format=json > "$out" 2>/tmp/pipaudit_err_$$.txt
             local rc=$?
             if ! jq -e . "$out" >/dev/null 2>&1; then
               echo "::error::pip-audit no produjo JSON válido para '$label' (rc=$rc) — tool/red falló o deps sin pinear."
-              cat /tmp/pipaudit_err_$$.txt || true
-              return 1
-            fi
-            # `rc` se capturaba y NUNCA se evaluaba. Hoy no hay ruta explotable conocida
-            # (--strict sale por _fatal antes de escribir el JSON, y timeout lo trunca; en
-            # ambos casos jq falla y ya bloquea), pero eso lo cierra por ACCIDENTE: un cambio
-            # de comportamiento de pip-audit lo abriria sin que nadie se entere.
-            if [ "$rc" -ne 0 ]; then
-              echo "::error::pip-audit salio con rc=$rc en '$label' aunque el JSON sea valido — fail-closed."
               cat /tmp/pipaudit_err_$$.txt || true
               return 1
             fi
@@ -254,6 +262,16 @@ jobs:
             jq '[.. | objects | select(has("vulns")) | select((.vulns|length)>0) | {name, version, ids: [.vulns[].id]}]' "$out"
             if [ "$vulns" -gt 0 ]; then
               echo "::error::'$label' tiene $vulns vuln(s) — bloqueado (supply chain no es opcional; pip-audit no da severidad, ver #654)."
+              return 1
+            fi
+            # `rc` != 0 con JSON valido y CERO vulns = la herramienta fallo de otra forma.
+            # El orden importa: esta comprobacion va DESPUES de la de vulns, no antes. Al reves
+            # (primer intento, 2026-08-03) el mensaje decia "aunque el JSON sea valido" para el
+            # caso normal de "encontro vulnerabilidades", que es exactamente lo contrario de lo
+            # que estaba pasando — un fail-closed correcto con un diagnostico enganoso.
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::pip-audit salio con rc=$rc en '$label' con JSON valido y 0 vulns — fail-closed."
+              cat /tmp/pipaudit_err_$$.txt || true
               return 1
             fi
             return 0
