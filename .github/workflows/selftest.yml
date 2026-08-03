@@ -22,8 +22,17 @@ permissions:
   contents: read
 
 concurrency:
+  # cancel-in-progress: FALSE a proposito. Un canario que se cancela a si mismo no da senal:
+  # ocurrio en el primer uso real (2026-08-03) -- el `git push origin main` disparo un run y el
+  # `gh workflow run` manual, lanzado para verificar ANTES de mover el tag, cayo en el mismo
+  # grupo y salio "cancelled". Ni verde ni rojo. Quien mira el resultado del dispatch para
+  # decidir si publica, ve una cancelacion y no sabe nada.
+  #
+  # El costo de encolar dos runs de ~1 min es despreciable frente a publicar un tag creyendo
+  # que el canario paso. Mismo criterio que el `concurrency` de los deploys: nunca cancelar
+  # algo cuyo resultado alguien esta esperando para tomar una decision.
   group: selftest-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # 1. Las recetas ARRANCAN de punta a punta (pines de actions, steps, skips limpios).
