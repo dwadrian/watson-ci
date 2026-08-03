@@ -34,6 +34,10 @@ on:
         description: 'Versión de Python (pip-audit requiere >=3.10)'
         type: string
         default: '3.12'
+      python-audit-optional:
+        description: 'true = un proyecto SIN lockfile auditable pasa con WARN en vez de ROJO. Solo para repos donde las deps se gestionan fuera del repo. Default false.'
+        type: boolean
+        default: false
 
 concurrency:
   group: verify-python-${{ github.workflow }}-${{ github.ref }}
@@ -51,6 +55,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # persist-credentials: false — el GITHUB_TOKEN quedaba escrito en .git/config del
+          # workspace, en el MISMO job donde corre el `pip install` de tooling cuyas deps
+          # transitivas no estan pineadas por hash. Nada aqui usa el token para git: solo
+          # merge-base, cat-file y --baseline-commit, todo local.
+          persist-credentials: false
           fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
           filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
 
@@ -67,7 +76,7 @@ jobs:
           pipx install pip-audit==2.10.1
 
       - name: 🔑 Secrets scan (bloquea siempre)
-        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
 
       - name: 🛡️ SAST high/critical (diff-aware)
         env:
@@ -81,7 +90,7 @@ jobs:
         run: |
           set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
           CONFIGS='--config p/security-audit --config p/python'
-          COMMON='--severity ERROR --quiet --disable-version-check --timeout 120'
+          COMMON='--severity ERROR --quiet --disable-version-check --metrics=off --timeout 120'
 
           # --- branch-aware (v2.2): push/PR hacia rama GATEADA => full-estricto sin baseline.
           # "El costo donde el riesgo": la deuda vieja TAMBIEN bloquea camino a prod.
@@ -124,25 +133,54 @@ jobs:
 
       - name: 🟡 SAST medio/bajo (advisory)
         if: always()
-        run: semgrep scan --config "p/security-audit" --config "p/python" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+        run: semgrep scan --config "p/security-audit" --config "p/python" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
       # Dep-audit con pip-audit (PyPA oficial). Gate por JSON. --no-deps/--locked auditan SIN
       # instalar (no se ejecuta setup.py de ninguna dep). Solo fuentes TOTALMENTE PINEADAS.
       - name: 📦 pip-audit (bloquea CUALQUIER vuln SIEMPRE)
+        env:
+          AUDIT_OPTIONAL: ${{ inputs.python-audit-optional }}
         run: |
           set -uo pipefail
 
+          # maxdepth 6 (era 2, v3 2026-08-03): a profundidad 3+ NO se auditaba y el log decia
+          # "pip-audit OK" igual. Caso real medido: makro_erpnext tiene
+          # deploy/frappe_docker/requirements-test.txt (prof. 3) que NUNCA se audito, mientras
+          # frappe_docker/requirements-test.txt (prof. 2) si. Verde con cobertura parcial es
+          # peor que rojo: afirma algo falso.
           reqfiles=()
-          while IFS= read -r f; do reqfiles+=("$f"); done < <(find . -maxdepth 2 -name 'requirements*.txt' -not -path '*/.git/*' | sort)
+          while IFS= read -r f; do reqfiles+=("$f"); done < <(
+            find . -maxdepth 6 -name 'requirements*.txt' \
+              -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/.venv/*' \
+              -not -path '*/venv/*' -not -path '*/site-packages/*' | sort)
           has_pylock=false; [ -f pylock.toml ] && has_pylock=true
           has_pyproject=false; [ -f pyproject.toml ] && has_pyproject=true
 
+          # Lockfiles de otros gestores. NO se auditan (pip-audit no los lee), pero su
+          # existencia significa "este proyecto SI tiene deps pineadas" — dar exit 0 aqui era
+          # declarar cobertura total con cero cobertura.
+          otros_locks=()
+          for l in poetry.lock uv.lock Pipfile.lock pdm.lock; do
+            [ -f "$l" ] && otros_locks+=("$l")
+          done
+
           if [ "${#reqfiles[@]}" -eq 0 ] && [ "$has_pylock" = "false" ]; then
+            if [ "${#otros_locks[@]}" -gt 0 ]; then
+              echo "::error::Hay ${otros_locks[*]} pero pip-audit no lee ese formato: CERO cobertura de dependencias."
+              echo "  Exporta a un formato auditable y commitealo:"
+              echo "    poetry export -f requirements.txt --output requirements.txt"
+              echo "    uv export --format requirements-txt > requirements.txt"
+              echo "  O declara la excepcion con el input python-audit-optional: true."
+              [ "${AUDIT_OPTIONAL:-false}" = "true" ] && { echo "::warning::exento por python-audit-optional"; exit 0; }
+              exit 1
+            fi
             if [ "$has_pyproject" = "true" ]; then
-              echo "::warning::Hay pyproject.toml pero ningún lockfile pineado (requirements*.txt / pylock.toml)."
-              echo "::warning::Auditar pyproject requeriría CONSTRUIR el proyecto — se omite por seguridad."
-              echo "::warning::Genera un lockfile: 'pip lock' (PEP 751 -> pylock.toml) o pip-compile -> requirements.txt."
-              exit 0
+              echo "::error::Hay pyproject.toml pero ningun lockfile pineado (requirements*.txt / pylock.toml)."
+              echo "  Auditar pyproject requeriria CONSTRUIR el proyecto — no se hace por seguridad."
+              echo "  Genera un lockfile: 'pip lock' (PEP 751 -> pylock.toml) o pip-compile -> requirements.txt."
+              echo "  Antes de v3 esto era exit 0 (VERDE sin auditar una sola dependencia)."
+              [ "${AUDIT_OPTIONAL:-false}" = "true" ] && { echo "::warning::exento por python-audit-optional"; exit 0; }
+              exit 1
             fi
             echo "sin manifiesto Python (requirements*.txt / pylock.toml / pyproject.toml) — skip pip-audit."
             exit 0
@@ -157,6 +195,15 @@ jobs:
             local rc=$?
             if ! jq -e . "$out" >/dev/null 2>&1; then
               echo "::error::pip-audit no produjo JSON válido para '$label' (rc=$rc) — tool/red falló o deps sin pinear."
+              cat /tmp/pipaudit_err_$$.txt || true
+              return 1
+            fi
+            # `rc` se capturaba y NUNCA se evaluaba. Hoy no hay ruta explotable conocida
+            # (--strict sale por _fatal antes de escribir el JSON, y timeout lo trunca; en
+            # ambos casos jq falla y ya bloquea), pero eso lo cierra por ACCIDENTE: un cambio
+            # de comportamiento de pip-audit lo abriria sin que nadie se entere.
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::pip-audit salio con rc=$rc en '$label' aunque el JSON sea valido — fail-closed."
               cat /tmp/pipaudit_err_$$.txt || true
               return 1
             fi

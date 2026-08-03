@@ -36,6 +36,10 @@ on:
         description: 'Versión de PHP'
         type: string
         default: '8.3'
+      audit-allow-cve:
+        description: 'CVEs concretos (coma-separados) exentos del bloqueo por advisory SIN severidad. NO hay escape global: cada falso positivo se declara por su id.'
+        type: string
+        default: ''
 
 concurrency:
   group: verify-php-${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +59,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # persist-credentials: false — el GITHUB_TOKEN quedaba escrito en .git/config del
+          # workspace, en el MISMO job donde corre el `pip install` de tooling cuyas deps
+          # transitivas no estan pineadas por hash. Nada aqui usa el token para git: solo
+          # merge-base, cat-file y --baseline-commit, todo local.
+          persist-credentials: false
           fetch-depth: 0
           filter: blob:none   # grafo completo para merge-base; blobs on-demand (barato en repos grandes)
 
@@ -69,10 +78,15 @@ jobs:
       # Secrets: full scan, SIEMPRE bloquea. NO baseline (un secreto commiteado hace meses
       # sigue exigiendo rotación; no es "deuda tolerable").
       - name: 🔑 Secrets scan (bloquea siempre)
-        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
 
       # SAST ERROR diff-aware. Corre ANTES de composer install => árbol limpio (semgrep
-      # baseline aborta si hay cambios unstaged). Ruleset community pineado; NUNCA --config auto.
+      # baseline aborta si hay cambios unstaged). NUNCA --config auto.
+        # OJO: los rulesets `p/...` NO estan pineados — se descargan MUTABLES de semgrep.dev
+        # en cada corrida. Lo pineado es el BINARIO (semgrep==1.157.0). Este comentario decia
+        # "Ruleset community pineado" y era FALSO; corregido en v3. El riesgo se acepto para
+        # v1 con bus factor 1 y nunca se re-evaluo al pasar a 16 consumidores con produccion
+        # incluida. Mitigacion pendiente (backlog): vendorizar las reglas en el repo.
       - name: 🛡️ SAST high/critical (diff-aware)
         # SHAs por env (nunca interpolados en el shell) — evita el vector de script-injection.
         env:
@@ -86,7 +100,7 @@ jobs:
         run: |
           set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
           CONFIGS='--config p/security-audit --config p/php'
-          COMMON='--severity ERROR --quiet --disable-version-check --timeout 120'
+          COMMON='--severity ERROR --quiet --disable-version-check --metrics=off --timeout 120'
 
           # --- branch-aware (v2.2): push/PR hacia rama GATEADA => full-estricto sin baseline.
           # "El costo donde el riesgo": la deuda vieja TAMBIEN bloquea camino a prod.
@@ -133,7 +147,7 @@ jobs:
 
       - name: 🟡 SAST medio/bajo (advisory)
         if: always()
-        run: semgrep scan --config "p/security-audit" --config "p/php" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+        run: semgrep scan --config "p/security-audit" --config "p/php" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
       - name: Setup PHP
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
@@ -148,6 +162,10 @@ jobs:
       # (caso Laravel 4.2: install fallaba por plataforma antes de llegar al audit).
       # composer.json sin lock => RED (el lock es obligatorio para auditar lo que se despliega).
       - name: 📦 composer audit (bloquea high/critical SIEMPRE)
+        # El input viaja por env, jamás interpolado en el bloque run — misma doctrina
+        # anti-script-injection que los SHAs del paso de SAST.
+        env:
+          AUDIT_ALLOW_CVE: ${{ inputs.audit-allow-cve }}
         run: |
           set -euo pipefail
           if [ ! -f composer.json ]; then echo "sin composer.json — skip composer audit"; exit 0; fi
@@ -170,7 +188,31 @@ jobs:
             echo "::error::Dependencias PHP high/critical: $HIGHCRIT — bloqueado (supply chain no es opcional)."
             exit 1
           fi
-          echo "✅ composer audit OK (medium/low/sin-severidad no bloquean; revisar los $UNKNOWN sin severidad)."
+          # Un advisory SIN campo `severity` tambien bloquea (v3, 2026-08-03). Antes solo se
+          # avisaba: "medium/low/sin-severidad no bloquean". Los advisories de PHP via
+          # FriendsOfPHP llegan con frecuencia sin metadato de severidad, asi que una RCE
+          # critica en una dep de Laravel podia pasar en VERDE imprimiendo "composer audit OK".
+          # Sin severidad != sin riesgo: es falta de dato, y ante falta de dato se bloquea.
+          # Escape por CVE concreto (no global) via el input `audit-allow-cve`.
+          if [ "$UNKNOWN" -gt 0 ]; then
+            ALLOW="${AUDIT_ALLOW_CVE:-}"
+            REMAIN=$(jq --arg allow "$ALLOW" '
+              [.advisories[]?[]?
+               | select((.severity // "unknown") == "unknown")
+               | . as $a
+               | select(($allow | split(",") | map(ascii_downcase | gsub("^\\s+|\\s+$";"")))
+                        | index(($a.cve // $a.advisoryId // "sin-id") | ascii_downcase) | not)]
+              | length' /tmp/audit.json)
+            if [ "$REMAIN" -gt 0 ]; then
+              echo "::error::$REMAIN advisory(s) SIN severidad y sin allowlist — bloqueado."
+              echo "  Sin severidad no es sin riesgo: es falta de dato. Revisa el JSON de arriba."
+              echo "  Si son falsos positivos, listalos por CVE en el input audit-allow-cve"
+              echo "  (separados por coma). NO existe un escape global: cada uno se declara."
+              exit 1
+            fi
+            echo "ℹ️ $UNKNOWN sin severidad, todos en la allowlist declarada."
+          fi
+          echo "✅ composer audit OK (medium/low no bloquean; sin-severidad SI bloquea salvo allowlist)."
 
       - name: 📋 Summary
         if: always()

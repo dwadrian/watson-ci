@@ -1,21 +1,49 @@
 name: selftest (canario de recetas)
 
-# Canario manual: corre las 3 recetas del COMMIT ACTUAL (referencia local `./`)
-# sobre este mismo repo (trivial: sin manifiestos => los dep-audits hacen skip
-# limpio; secrets + SAST barren los yml). Valida que los pines de actions y los
-# steps arrancan de punta a punta ANTES de mover el alias v2 a la flota.
+# Corre las 3 recetas del COMMIT ACTUAL (referencia local `./`) sobre este mismo repo, mas los
+# fixtures de decision.
 #
-# Uso: gh workflow run selftest.yml (workflow_dispatch)
+# POR QUE CORRE EN push/PR Y NO SOLO A MANO (v3, 2026-08-03):
+# hasta v2 esto era `workflow_dispatch:` unicamente. Consecuencia medida: `v2.2.0` (branch-aware
+# full-strict) y `v2.2.1` cambiaron **que commits pasan y cuales fallan** en los repos gateados,
+# se publicaron moviendo el alias `v2`, y el UNICO run de selftest de toda la historia era
+# ANTERIOR a ambos. Encima, el corte de facturacion de GitHub tumbo el CI de la flota ~10 dias,
+# asi que una regresion real no habria sido detectable. Que no pasara nada fue suerte.
+#
+# Este repo es el de mayor blast radius de la flota (16 consumidores, produccion incluida) y era
+# el unico sin CI propio.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: selftest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # 1. Las recetas ARRANCAN de punta a punta (pines de actions, steps, skips limpios).
   node:
     uses: ./.github/workflows/verify-node.yml
   php:
     uses: ./.github/workflows/verify-php.yml
   python:
     uses: ./.github/workflows/verify-python.yml
+
+  # 2. Las recetas DECIDEN BIEN. Esto es lo que faltaba: "arranca" y "decide bien" son cosas
+  #    distintas, y v2.2.0 cambio la segunda sin que nada lo verificara.
+  decisiones:
+    name: 🎯 fixtures de decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Veredictos esperados sobre fixtures conocidos
+        run: bash tests/expect-audit-decision.sh

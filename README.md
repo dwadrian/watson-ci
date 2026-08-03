@@ -9,12 +9,18 @@ ningún secreto**. Es público para que cualquier repo (bajo cualquier owner) pu
 
 Ambas corren la **capa stack-agnóstica de seguridad** (no necesita DB ni servicios):
 
-| Paso | verify-php | verify-node | Bloquea |
-|------|-----------|-------------|---------|
-| Secrets scan (Semgrep `p/secrets`) | ✅ | ✅ | siempre |
-| SAST high/critical (Semgrep security-audit + lang pack, `--severity ERROR`) | ✅ | ✅ | si `blocking: true` |
-| SAST medio/bajo | advisory | advisory | nunca |
-| Dependencias (`composer audit` / `npm audit`) | ✅ | ✅ | high/critical si `blocking: true` |
+| Paso | php | node | python | Bloquea |
+|------|:---:|:----:|:------:|---------|
+| Secrets scan (Semgrep `p/secrets`) | ✅ | ✅ | ✅ | **siempre** |
+| SAST ERROR **diff-aware** (vs baseline) | ✅ | ✅ | ✅ | hallazgos **nuevos**; la deuda vieja no rompe |
+| SAST en rama gateada (`main`/`master`/`*_prod`) | ✅ | ✅ | ✅ | full-estricto, salvo `strict-on-gated: false` |
+| SAST medio/bajo | advisory | advisory | advisory | nunca |
+| Dependencias high/critical | ✅ | ✅ | ✅ | **siempre** |
+| Advisory **sin campo `severity`** | ✅ | — | — | **v3: SÍ bloquea** (v2 daba verde) |
+| Proyecto Python **sin lockfile auditable** | — | — | ✅ | **v3: SÍ bloquea** (v2 hacía `exit 0`) |
+
+> El input `blocking` **ya no existe** (se eliminó en v2). Secrets siempre bloquea, deps siempre
+> high/critical, SAST es diff-aware. Un caller que lo pase falla al arrancar con "input desconocido".
 
 Los **tests con DB/servicios** NO van aquí — son project-specific y viven en el workflow
 propio de cada repo (ej. el `no-mock` job de coffee con su MariaDB).
@@ -31,10 +37,10 @@ on:
   pull_request:
 jobs:
   verify:
-    uses: dwadrian/watson-ci/.github/workflows/verify-php.yml@v1
+    uses: dwadrian/watson-ci/.github/workflows/verify-php.yml@v3
     with:
       php-version: '8.3'
-      blocking: true            # false en repos dev/experimentales (advisory)
+      # audit-allow-cve: 'CVE-2024-1234'   # opcional: exime advisories SIN severidad, por id
 ```
 
 Node:
@@ -42,11 +48,12 @@ Node:
 ```yaml
 jobs:
   verify:
-    uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v1
+    uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v3
     with:
       node-version: '20'
-      blocking: true
-      test-command: 'node --test'   # opcional
+      # test-command: 'node --test'   # opcional. NUNCA metas ${{ }} de datos de evento aquí:
+      #   se ejecuta como shell. Del caller a su propio job no es escalada (quien edita ese YAML
+      #   ya puede ejecutar lo que quiera), pero interpolar un título de PR sí lo convierte en RCE.
 ```
 
 ## Garantías de seguridad / costo (por qué no se dispara solo ni cobra de más)
@@ -68,9 +75,22 @@ por versión/hash**, así que su contenido puede cambiar entre corridas y una ca
 hace fail-closed (RED) toda la flota. Aceptable para v1 (bus factor 1, prioridad = tener gate).
 Mitigación futura: vendorizar los rulesets críticos en este repo (`--config ./rules/...`).
 
-## Versionado
+## Alias móviles: el criterio cambió
 
-`@v1` es un **alias mayor móvil**: apunta siempre al último `v1.x` (bugfixes y features
-retro-compatibles se publican re-apuntando `v1` a un commit nuevo). Los callers fijan `@v1` y
-reciben fixes sin tocar nada. Un cambio **breaking** sale como `@v2` (los callers migran a mano).
-`main` es desarrollo; no referenciar `@main` en producción.
+Hasta v2, `@vN` era un **alias móvil**: se re-apuntaba con `git push --force origin vN` y los
+callers recibían el cambio sin tocar nada. Cómodo, y por eso mismo peligroso.
+
+**Criterio desde v3:** cualquier cambio que pueda voltear **pass → fail** en código YA existente
+va en un mayor nuevo, aunque sea aditivo en el YAML. El alias móvil queda para lo que de verdad
+no altera veredictos (documentación, refactor interno, pines de actions a la misma versión).
+
+`main` es desarrollo; no referenciar `@main` en producción. Cada movimiento de alias lleva su
+**tag inmutable** — `v2` llegó a apuntar a un commit sin tag, que es lo que ejecutaban 11 repos.
+
+### Nota de seguridad sobre el alias
+
+Un tag **no** lo protege una branch protection rule: quien tenga `write` sobre este repo (o un
+PAT comprometido de la cuenta) puede re-apuntarlo. Como 16 repos privados lo consumen —varios de
+producción— **pinear por SHA en el caller es más seguro que `@vN`**, siempre que se acompañe de
+Dependabot `github-actions`; sin él, el pin se congela y el repo deja de recibir arreglos (ya
+pasó: un caller lleva desde 2026-07-17 sin recibir tres versiones).

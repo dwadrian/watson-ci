@@ -50,6 +50,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # persist-credentials: false — el GITHUB_TOKEN quedaba escrito en .git/config del
+          # workspace, en el MISMO job donde corre el `pip install` de tooling cuyas deps
+          # transitivas no estan pineadas por hash. Nada aqui usa el token para git: solo
+          # merge-base, cat-file y --baseline-commit, todo local.
+          persist-credentials: false
           fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
           filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
 
@@ -62,7 +67,7 @@ jobs:
         run: pip install semgrep==1.157.0
 
       - name: 🔑 Secrets scan (bloquea siempre)
-        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --timeout 120 .
+        run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
 
       - name: 🛡️ SAST high/critical (diff-aware)
         env:
@@ -76,7 +81,7 @@ jobs:
         run: |
           set -uo pipefail   # OJO: el shell de Actions ya trae -e; el advisory usa `if` para no abortar.
           CONFIGS='--config p/security-audit --config p/javascript --config p/typescript'
-          COMMON='--severity ERROR --quiet --disable-version-check --timeout 120'
+          COMMON='--severity ERROR --quiet --disable-version-check --metrics=off --timeout 120'
 
           # --- branch-aware (v2.2): push/PR hacia rama GATEADA => full-estricto sin baseline.
           # "El costo donde el riesgo": la deuda vieja TAMBIEN bloquea camino a prod.
@@ -119,7 +124,7 @@ jobs:
 
       - name: 🟡 SAST medio/bajo (advisory)
         if: always()
-        run: semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity WARNING --quiet --disable-version-check --timeout 120 . || true
+        run: semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

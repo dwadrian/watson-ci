@@ -1,0 +1,7 @@
+# Fixture: proyecto Python con pyproject y SIN lockfile auditable.
+# En v2 la receta hacia `exit 0` con un warning => VERDE sin auditar una sola dependencia.
+# En v3 debe ser ROJO: "sin lock auditable" es falta de cobertura, no ausencia de riesgo.
+[project]
+name = "fixture-sin-lock"
+version = "0.0.0"
+dependencies = ["requests"]

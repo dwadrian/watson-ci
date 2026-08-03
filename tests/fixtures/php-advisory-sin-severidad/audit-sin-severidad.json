@@ -1,0 +1,13 @@
+{
+  "advisories": {
+    "vendor/paquete": [
+      {
+        "advisoryId": "PKSA-fixture-0000-0001",
+        "packageName": "vendor/paquete",
+        "title": "Advisory sintetico SIN campo severity",
+        "cve": "CVE-0000-0001"
+      }
+    ]
+  },
+  "abandoned": {}
+}
