@@ -72,6 +72,20 @@ jobs:
       #
       # Se ancla a la MISMA ref con la que se invoco la receta (`job_workflow_ref`), no a `main`:
       # si un repo pide @v2, su tooling es el de @v2. Fail-closed si no se puede determinar.
+      - name: "🔎 DEBUG contexto (temporal)"
+        env:
+          JOB_REF: ${{ github.job_workflow_ref }}
+          WF_REF: ${{ github.workflow_ref }}
+          ACTION_REF: ${{ github.action_ref }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "job_workflow_ref = [$JOB_REF]"
+          echo "workflow_ref     = [$WF_REF]"
+          echo "action_ref       = [$ACTION_REF]"
+          echo "ref              = [$REF]"
+          echo "repository       = [$REPO]"
+
       - name: "📌 Anclar la version de la receta"
         id: receta
         env:
