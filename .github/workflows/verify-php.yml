@@ -104,6 +104,76 @@ jobs:
           echo "archivos rastreados por git: $TRACKED"
           echo "  (si el numero escaneado por semgrep es mucho menor, el ignore esta comiendose el gate)"
 
+      # ── Alcance del push (v4, 2026-08-05) ────────────────────────────────────────────
+      # Un push que solo toca documentacion no necesita SAST ni tests. Medido en la flota:
+      # 12 de 16 commits de un dia fueron docs puros y cada uno pago ~11.6 min de CI
+      # (~140 min tirados). Con 3000 min/mes de cuota eso es sangrado real, no teoria.
+      #
+      # NO se usa `paths-ignore` en el trigger, y es deliberado — tres razones medidas:
+      #   1. Los SECRETOS se siguen escaneando siempre. Una clave pegada en un `.md` es una
+      #      fuga igual que en codigo: el CI de watson estuvo 4 dias en rojo por exactamente
+      #      eso, un hallazgo en `docs/**.md`. `paths-ignore` lo habria vuelto invisible.
+      #   2. `paths-ignore` deja los *required status checks* en "Expected - waiting for
+      #      status" para siempre. Aqui el job siempre corre y siempre reporta.
+      #   3. El trigger vive en el stub de CADA repo; este `if:` vive en la receta. Un solo
+      #      cambio para los 17 y no puede derivar.
+      #
+      # FAIL-SAFE: `solo_docs=true` solo se escribe cuando se PRUEBA que todo es
+      # documentacion. Si el paso muere, la salida queda sin definir, `!= 'true'` es cierto
+      # y se corre TODO. Los patrones estan HARDCODEADOS: como input, un repo podria
+      # ensanchar su propio hueco — la misma clase que el `.semgrepignore` de arriba.
+      - name: "📐 Alcance del push (¿solo documentacion?)"
+        id: alcance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          CERO=0000000000000000000000000000000000000000
+          SOLO_DOCS=false; MOTIVO="se corre TODO"
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target) BASE="$BASE_SHA" ;;
+            push)                             BASE="$BEFORE_SHA" ;;
+            *)                                BASE="" ;;
+          esac
+          if [ -z "$BASE" ] || [ "$BASE" = "$CERO" ]; then
+            MOTIVO="sin base utilizable (rama nueva, force-push o evento $EVENT_NAME)"
+          elif ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            MOTIVO="la base $BASE no esta en este clon"
+          else
+            CHANGED=$(git diff --name-only "$BASE" "$HEAD_SHA" 2>/dev/null) || CHANGED="__ERROR__"
+            if [ "$CHANGED" = "__ERROR__" ]; then
+              MOTIVO="git diff fallo"
+            elif [ -z "$CHANGED" ]; then
+              MOTIVO="diff vacio (merge, revert o push sin cambios)"
+            else
+              # Conteo explicito con `case`, NO `grep -qv`: en un shell con `grep` aliasado a
+              # ugrep, `-qv` sobre entrada multilinea devuelve la respuesta CONTRARIA (medido
+              # 2026-08-05, produjo un conteo imposible de "0 commits con codigo"). `case` es
+              # POSIX y deterministico en cualquier shell.
+              NO_DOCS=0; TOTAL=0
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                TOTAL=$((TOTAL+1))
+                case "$f" in docs/*|*.md) ;; *) NO_DOCS=$((NO_DOCS+1)) ;; esac
+              done <<EOF
+          $CHANGED
+          EOF
+              if [ "$TOTAL" -gt 0 ] && [ "$NO_DOCS" -eq 0 ]; then
+                SOLO_DOCS=true; MOTIVO="$TOTAL archivo(s), todos documentacion"
+              else
+                MOTIVO="$NO_DOCS de $TOTAL archivo(s) NO son documentacion"
+              fi
+            fi
+          fi
+          echo "solo_docs=$SOLO_DOCS" >> "$GITHUB_OUTPUT"
+          echo "alcance: solo_docs=$SOLO_DOCS - $MOTIVO"
+          if [ "$SOLO_DOCS" = "true" ]; then
+            echo "::notice::Push solo-documentacion: SAST y tests OMITIDOS. Secretos y dep-audit SI corrieron."
+          fi
+
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
 
@@ -115,6 +185,7 @@ jobs:
         # v1 con bus factor 1 y nunca se re-evaluo al pasar a 16 consumidores con produccion
         # incluida. Mitigacion pendiente (backlog): vendorizar las reglas en el repo.
       - name: 🛡️ SAST high/critical (diff-aware)
+        if: steps.alcance.outputs.solo_docs != 'true'
         # SHAs por env (nunca interpolados en el shell) — evita el vector de script-injection.
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -173,7 +244,7 @@ jobs:
           fi
 
       - name: 🟡 SAST medio/bajo (advisory)
-        if: always()
+        if: always() && steps.alcance.outputs.solo_docs != 'true'
         run: semgrep scan --config "p/security-audit" --config "p/php" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
       - name: Setup PHP
