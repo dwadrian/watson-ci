@@ -40,6 +40,15 @@ on:
         description: 'CVEs concretos (coma-separados) exentos del bloqueo por advisory SIN severidad. NO hay escape global: cada falso positivo se declara por su id.'
         type: string
         default: ''
+      tooling-ref:
+        description: >-
+          Ref de watson-ci de donde se toma el tooling pineado (requirements con hash y
+          alcance.sh). Default 'v2'. NO se puede derivar en runtime: medido 2026-08-05 desde
+          un repo externo, `github.job_workflow_ref` llega VACIO (es un claim de OIDC, no una
+          expresion) y `github.workflow_ref` apunta al CALLER. Por eso es explicito. Un caller
+          que consuma la receta por otro alias debe pasar el suyo.
+        type: string
+        default: 'v2'
 
 concurrency:
   group: verify-php-${{ github.workflow }}-${{ github.ref }}
@@ -73,35 +82,19 @@ jobs:
           python-version: '3.12'
 
       # ── El tooling pineado vive en watson-ci, NO en el repo que llama ────────────────
-      # Un workflow reutilizable ejecuta sus `run:` sobre el checkout del CALLER. Referir
-      # `tools/requirements-*.txt` con ruta relativa funcionaba solo dentro de watson-ci y
-      # reventaba en los 17 repos con "No such file or directory", matando el job en el paso 4:
-      # ni secretos, ni SAST, ni dep-audit, ni tests. El canario `selftest.yml` no puede cazar
-      # esta clase: corre DENTRO de watson-ci, donde la ruta si resuelve.
+      # Un workflow reutilizable ejecuta sus `run:` sobre el checkout del CALLER, asi que
+      # `tools/requirements-*.txt` solo resolvia dentro de watson-ci y reventaba en los 17
+      # repos con "No such file or directory", matando el job antes de escanear NADA. El
+      # canario `selftest.yml` es ciego a esta clase: corre DENTRO de watson-ci.
       #
-      # Se ancla a la MISMA ref con la que se invoco la receta (`job_workflow_ref`), no a `main`:
-      # si un repo pide @v2, su tooling es el de @v2. Fail-closed si no se puede determinar.
-      - name: "📌 Anclar la version de la receta"
-        id: receta
-        env:
-          JOB_REF: ${{ github.job_workflow_ref }}
-        run: |
-          set -uo pipefail
-          # formato: owner/repo/.github/workflows/x.yml@refs/tags/v2
-          REF="${JOB_REF##*@}"
-          if [ -z "$REF" ] || [ "$REF" = "$JOB_REF" ]; then
-            echo "::error::No se pudo determinar la ref de la receta (job_workflow_ref='$JOB_REF')."
-            echo "::error::Sin tooling pineado no se continua: un scanner sin version fija no es un gate."
-            exit 1
-          fi
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "receta anclada a: $REF"
-
+      # La ref va como INPUT explicito, no derivada: medido desde un repo externo,
+      # `github.job_workflow_ref` llega VACIO y `github.workflow_ref` apunta al caller.
+      # No hay forma de que la receta sepa su propia ref.
       - name: Checkout del tooling de la receta
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: dwadrian/watson-ci
-          ref: ${{ steps.receta.outputs.ref }}
+          ref: ${{ inputs.tooling-ref }}
           path: .watson-ci-tooling
           persist-credentials: false
 
