@@ -72,12 +72,45 @@ jobs:
         with:
           python-version: '3.12'
 
+      # ── El tooling pineado vive en watson-ci, NO en el repo que llama ────────────────
+      # Un workflow reutilizable ejecuta sus `run:` sobre el checkout del CALLER. Referir
+      # `tools/requirements-*.txt` con ruta relativa funcionaba solo dentro de watson-ci y
+      # reventaba en los 17 repos con "No such file or directory", matando el job en el paso 4:
+      # ni secretos, ni SAST, ni dep-audit, ni tests. El canario `selftest.yml` no puede cazar
+      # esta clase: corre DENTRO de watson-ci, donde la ruta si resuelve.
+      #
+      # Se ancla a la MISMA ref con la que se invoco la receta (`job_workflow_ref`), no a `main`:
+      # si un repo pide @v2, su tooling es el de @v2. Fail-closed si no se puede determinar.
+      - name: "📌 Anclar la version de la receta"
+        id: receta
+        env:
+          JOB_REF: ${{ github.job_workflow_ref }}
+        run: |
+          set -uo pipefail
+          # formato: owner/repo/.github/workflows/x.yml@refs/tags/v2
+          REF="${JOB_REF##*@}"
+          if [ -z "$REF" ] || [ "$REF" = "$JOB_REF" ]; then
+            echo "::error::No se pudo determinar la ref de la receta (job_workflow_ref='$JOB_REF')."
+            echo "::error::Sin tooling pineado no se continua: un scanner sin version fija no es un gate."
+            exit 1
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "receta anclada a: $REF"
+
+      - name: Checkout del tooling de la receta
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: dwadrian/watson-ci
+          ref: ${{ steps.receta.outputs.ref }}
+          path: .watson-ci-tooling
+          persist-credentials: false
+
       - name: Instalar Semgrep (versión pineada)
         # --require-hashes: TODAS las deps transitivas pineadas por hash (tools/requirements-semgrep.txt).
         # Antes solo el binario estaba pineado y sus ~30 deps se resolvian en cada corrida; una
         # sola comprometida ejecuta codigo en el job, con el fuente privado del caller ya en
         # disco. --no-deps porque el archivo ya trae el cierre transitivo completo.
-        run: pip install --require-hashes --no-deps -r tools/requirements-semgrep.txt
+        run: pip install --require-hashes --no-deps -r .watson-ci-tooling/tools/requirements-semgrep.txt
 
       # Secrets: full scan, SIEMPRE bloquea. NO baseline (un secreto commiteado hace meses
       # sigue exigiendo rotación; no es "deuda tolerable").
@@ -104,24 +137,10 @@ jobs:
           echo "archivos rastreados por git: $TRACKED"
           echo "  (si el numero escaneado por semgrep es mucho menor, el ignore esta comiendose el gate)"
 
-      # ── Alcance del push (v4, 2026-08-05) ────────────────────────────────────────────
-      # Un push que solo toca documentacion no necesita SAST ni tests. Medido en la flota:
-      # 12 de 16 commits de un dia fueron docs puros y cada uno pago ~11.6 min de CI
-      # (~140 min tirados). Con 3000 min/mes de cuota eso es sangrado real, no teoria.
-      #
-      # NO se usa `paths-ignore` en el trigger, y es deliberado — tres razones medidas:
-      #   1. Los SECRETOS se siguen escaneando siempre. Una clave pegada en un `.md` es una
-      #      fuga igual que en codigo: el CI de watson estuvo 4 dias en rojo por exactamente
-      #      eso, un hallazgo en `docs/**.md`. `paths-ignore` lo habria vuelto invisible.
-      #   2. `paths-ignore` deja los *required status checks* en "Expected - waiting for
-      #      status" para siempre. Aqui el job siempre corre y siempre reporta.
-      #   3. El trigger vive en el stub de CADA repo; este `if:` vive en la receta. Un solo
-      #      cambio para los 17 y no puede derivar.
-      #
-      # FAIL-SAFE: `solo_docs=true` solo se escribe cuando se PRUEBA que todo es
-      # documentacion. Si el paso muere, la salida queda sin definir, `!= 'true'` es cierto
-      # y se corre TODO. Los patrones estan HARDCODEADOS: como input, un repo podria
-      # ensanchar su propio hueco — la misma clase que el `.semgrepignore` de arriba.
+      # La lógica NO se duplica aquí: se ejecuta `alcance.sh` del checkout del tooling, el
+      # MISMO archivo que consume la composite action `.github/actions/alcance` para los
+      # workflows locales de cada repo. Una implementación, dos modos de consumo — si viviera
+      # inline, la copia de la receta y la de los repos divergirían en el primer arreglo.
       - name: "📐 Alcance del push (¿solo documentacion?)"
         id: alcance
         env:
@@ -129,50 +148,12 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
-        run: |
-          set -uo pipefail
-          CERO=0000000000000000000000000000000000000000
-          SOLO_DOCS=false; MOTIVO="se corre TODO"
-          case "$EVENT_NAME" in
-            pull_request|pull_request_target) BASE="$BASE_SHA" ;;
-            push)                             BASE="$BEFORE_SHA" ;;
-            *)                                BASE="" ;;
-          esac
-          if [ -z "$BASE" ] || [ "$BASE" = "$CERO" ]; then
-            MOTIVO="sin base utilizable (rama nueva, force-push o evento $EVENT_NAME)"
-          elif ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
-            MOTIVO="la base $BASE no esta en este clon"
-          else
-            CHANGED=$(git diff --name-only "$BASE" "$HEAD_SHA" 2>/dev/null) || CHANGED="__ERROR__"
-            if [ "$CHANGED" = "__ERROR__" ]; then
-              MOTIVO="git diff fallo"
-            elif [ -z "$CHANGED" ]; then
-              MOTIVO="diff vacio (merge, revert o push sin cambios)"
-            else
-              # Conteo explicito con `case`, NO `grep -qv`: en un shell con `grep` aliasado a
-              # ugrep, `-qv` sobre entrada multilinea devuelve la respuesta CONTRARIA (medido
-              # 2026-08-05, produjo un conteo imposible de "0 commits con codigo"). `case` es
-              # POSIX y deterministico en cualquier shell.
-              NO_DOCS=0; TOTAL=0
-              while IFS= read -r f; do
-                [ -z "$f" ] && continue
-                TOTAL=$((TOTAL+1))
-                case "$f" in docs/*|*.md) ;; *) NO_DOCS=$((NO_DOCS+1)) ;; esac
-              done <<EOF
-          $CHANGED
-          EOF
-              if [ "$TOTAL" -gt 0 ] && [ "$NO_DOCS" -eq 0 ]; then
-                SOLO_DOCS=true; MOTIVO="$TOTAL archivo(s), todos documentacion"
-              else
-                MOTIVO="$NO_DOCS de $TOTAL archivo(s) NO son documentacion"
-              fi
-            fi
-          fi
-          echo "solo_docs=$SOLO_DOCS" >> "$GITHUB_OUTPUT"
-          echo "alcance: solo_docs=$SOLO_DOCS - $MOTIVO"
-          if [ "$SOLO_DOCS" = "true" ]; then
-            echo "::notice::Push solo-documentacion: SAST y tests OMITIDOS. Secretos y dep-audit SI corrieron."
-          fi
+        run: bash .watson-ci-tooling/.github/actions/alcance/alcance.sh
+
+      # El checkout del tooling se borra ANTES de escanear: si no, semgrep analizaría el
+      # código de la receta como si fuera del repo auditado.
+      - name: Limpiar el checkout del tooling
+        run: rm -rf .watson-ci-tooling
 
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .

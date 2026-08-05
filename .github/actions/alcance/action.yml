@@ -1,0 +1,38 @@
+name: 'Alcance del push'
+description: >-
+  ¿El push tocó solo documentación? Para workflows LOCALES que no heredan de una receta
+  verify-*. Devuelve `solo_docs`; úsalo para saltarte SAST y tests — nunca el escaneo de
+  secretos ni el dep-audit.
+
+# Existe porque en la flota hay repos cuyo gasto grande vive en workflows PROPIOS, no en
+# recetas: en makro_logistica, 2 de 3 workflows son locales y se llevan el 81% de los minutos.
+# Decirles "lo heredas de la receta" resolvía el 19%. Y decirles "cópiate el paso" garantizaba
+# que su copia y la nuestra divergieran en el primer arreglo.
+#
+# Por eso la lógica NO vive aquí: vive en `alcance.sh`, el mismo archivo que ejecutan las
+# recetas. Una implementación, dos modos de consumo.
+
+inputs:
+  head-sha:
+    description: 'SHA de la punta. Por defecto github.sha.'
+    required: false
+    default: ''
+
+outputs:
+  solo_docs:
+    description: >-
+      'true' SOLO si se probó que todos los archivos del diff son documentación.
+      Ante cualquier duda devuelve 'false', que significa CORRER TODO.
+    value: ${{ steps.calc.outputs.solo_docs }}
+
+runs:
+  using: composite
+  steps:
+    - id: calc
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BEFORE_SHA: ${{ github.event.before }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ inputs.head-sha != '' && inputs.head-sha || github.sha }}
+      run: bash "${{ github.action_path }}/alcance.sh"

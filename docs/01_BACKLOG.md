@@ -31,3 +31,12 @@
   el escaneo de secretos lo usa, así que el ahorro es de los pasos caros, no del arranque del job
   (~25-40 s por run). Cachear el entorno de semgrep recortaría ese piso.
   · origen: `docs/bitacoras/BITACORA-2026-08-05-paths-solo-docs.md` — límite declarado
+
+- [ ] **El canario `selftest.yml` es ciego a los bugs cross-repo, por construcción** — corre
+  DENTRO de watson-ci, donde toda ruta relativa al repo resuelve. Por eso salió **verde** el
+  mismo día en que la receta rompió el CI de los 17 repos con
+  `pip install -r tools/requirements-semgrep.txt` (ese archivo solo existe aquí; un workflow
+  reutilizable ejecuta sus `run:` sobre el checkout del CALLER). El canario debe invocar la
+  receta desde un repo **distinto** — un fixture mínimo o un repo de la flota designado— o
+  seguirá dando falsos verdes en la única clase que de verdad importa aquí.
+  · origen: incidente 2026-08-05, alias `v2` movido y revertido
