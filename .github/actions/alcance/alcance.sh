@@ -49,7 +49,19 @@ esac
 if [ -z "$BASE" ] || [ "$BASE" = "$CERO" ]; then
   MOTIVO="sin base utilizable (rama nueva, force-push o evento '$EVENT_NAME')"
 elif ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
-  MOTIVO="la base $BASE no esta en este clon (shallow o force-push)"
+  # Distinguir "clon shallow" de "base que de verdad no existe" NO es cosmético: con el
+  # `fetch-depth: 1` por defecto de actions/checkout, la base NUNCA está en el clon, así que
+  # esto cae SIEMPRE a "corre todo" y el filtro es un NO-OP SILENCIOSO — parece instalado y
+  # no ahorra un minuto. Lo reportó makro_logistica al cablearlo, tras leer el script antes
+  # de usarlo. Un ahorro que no ahorra y no lo dice es peor que no tener el filtro.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    MOTIVO="clon SHALLOW: la base no esta aqui, asi que NUNCA se omite nada"
+    echo "::warning::El filtro de solo-documentacion no puede funcionar en un clon shallow." \
+         "Anade 'fetch-depth: 0' al actions/checkout de este workflow, o quita el filtro:" \
+         "tal como esta, corre todo siempre y no ahorra minutos."
+  else
+    MOTIVO="la base $BASE no esta en este clon (force-push o rebase)"
+  fi
 else
   CHANGED=$(git diff --name-only "$BASE" "$HEAD_SHA" 2>/dev/null) || CHANGED="__ERROR__"
   if [ "$CHANGED" = "__ERROR__" ]; then

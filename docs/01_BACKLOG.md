@@ -40,3 +40,12 @@
   receta desde un repo **distinto** — un fixture mínimo o un repo de la flota designado— o
   seguirá dando falsos verdes en la única clase que de verdad importa aquí.
   · origen: incidente 2026-08-05, alias `v2` movido y revertido
+
+- [ ] **Decidir el reparto cuando el filtro guarda JOBS enteros, no pasos** — reportado por
+  makro_logistica al cablear la composite action: sus workflows son locales y guardan el **job**
+  completo, así que al omitir también se salta `composer audit` / `npm audit`. Eso contradice la
+  regla de watson ("dep-audit corre SIEMPRE": un CVE nuevo aparece sin que cambie tu código — es
+  el caso guzzle que ellos mismos reportaron). **Recomendación**: partir el dep-audit a un job
+  propio sin guarda; cuesta segundos y conserva la propiedad. La alternativa —aceptar el hueco—
+  hay que declararla, no heredarla por omisión.
+  · origen: feedback de makro_logistica, 2026-08-06

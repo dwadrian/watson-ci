@@ -2,7 +2,23 @@ name: 'Alcance del push'
 description: >-
   ¿El push tocó solo documentación? Para workflows LOCALES que no heredan de una receta
   verify-*. Devuelve `solo_docs`; úsalo para saltarte SAST y tests — nunca el escaneo de
-  secretos ni el dep-audit.
+  secretos ni el dep-audit. REQUIERE `fetch-depth: 0` en el checkout.
+
+# ⚠️ REQUISITO NO NEGOCIABLE: `actions/checkout` con `fetch-depth: 0`.
+#
+#     - uses: actions/checkout@<sha>
+#       with:
+#         fetch-depth: 0        # <-- sin esto el filtro NO AHORRA NADA
+#     - id: alcance
+#       uses: dwadrian/watson-ci/.github/actions/alcance@v2
+#     - name: lo caro
+#       if: steps.alcance.outputs.solo_docs != 'true'
+#
+# Con el `fetch-depth: 1` por defecto, la base del diff nunca está en el clon, así que el
+# resultado es SIEMPRE `false` — el filtro parece instalado y no omite un solo paso. Lo
+# detectó makro_logistica leyendo el script ANTES de cablearlo. Para que no dependa de que
+# alguien lo lea, `alcance.sh` ahora emite un `::warning::` explícito cuando detecta el clon
+# shallow: un ahorro que no ahorra y no lo dice es peor que no tener el filtro.
 
 # Existe porque en la flota hay repos cuyo gasto grande vive en workflows PROPIOS, no en
 # recetas: en makro_logistica, 2 de 3 workflows son locales y se llevan el 81% de los minutos.
