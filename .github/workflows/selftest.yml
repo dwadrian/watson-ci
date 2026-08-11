@@ -66,3 +66,11 @@ jobs:
           persist-credentials: false
       - name: Veredictos esperados sobre fixtures conocidos
         run: bash tests/expect-audit-decision.sh
+
+      # Excepciones de dependencias que CADUCAN. Este script decide si un advisory bloquea
+      # en los 17 repos, así que su suite corre ANTES de que se pueda publicar un tag.
+      # Los fixtures son capturas REALES (npm de una app Expo, composer de un repo Laravel,
+      # pip-audit 2.10.1): los tres hallazgos que más cambiaron el diseño no habrían
+      # aparecido con datos inventados.
+      - name: Excepciones de auditoría — decisión sobre corpus real
+        run: bash tests/audit-exceptions.test.sh
