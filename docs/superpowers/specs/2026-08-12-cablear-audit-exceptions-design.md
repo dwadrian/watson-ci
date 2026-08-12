@@ -14,7 +14,14 @@ Pedido por `makro_logistica` el 2026-08-05 como *"lo que más necesito"*.
 | Receta | Excepción existente | Alcance real | Caduca | Vive en | Repos que la usan |
 |---|---|---|---|---|---|
 | `verify-php` | input `audit-allow-cve` | **solo** advisories SIN severidad — un `high` nunca tuvo salida | no | el `with:` del stub | **0** |
-| `verify-python` | input `pip-audit-ignore-vuln` | cualquier id, vía `pip-audit --ignore-vuln` | no | el `with:` del stub | **0** |
+| `verify-python` | input `pip-audit-ignore-vuln` | cualquier id, vía `pip-audit --ignore-vuln` | no | el `with:` del stub | **1 — `watson-ci`** |
+
+> ⚠️ **Corregido en la ronda 1 del loop.** Esta tabla decía **0** en las dos filas. Falso:
+> `selftest.yml:54` pasa `pip-audit-ignore-vuln` con 3 PYSEC de `mcp==1.23.3`. Se midieron los 14
+> stubs de la flota y **no se midió el repo que se estaba editando** — una cifra sin declarar su
+> corpus. El enunciado correcto: *«cero stubs de la flota en su rama por defecto al 2026-08-12, más
+> watson-ci, que sí lo usa»*. Tampoco cubre ramas no-default ni la divergencia con `origin`, y el
+> denominador suma `lnbp-web-2022`, cuyo `origin` es Bitbucket y nunca ejecuta en GitHub Actions.
 | `verify-node` | ninguna | — | — | — | — |
 
 Distribución de recetas: `verify-node` ×6, `verify-php` ×6, `verify-python` ×2. Ningún repo está en
