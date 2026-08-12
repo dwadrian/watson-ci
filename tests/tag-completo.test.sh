@@ -51,10 +51,28 @@ if [ -z "$ACCIONES" ]; then
 fi
 echo "Acciones publicadas por este repo: $(printf '%s' "$ACCIONES" | tr '\n' ' ')"
 
+# nacimiento <accion> -> epoch del commit que la ANADIO.
+# Un tag anterior a esa fecha NO esta roto: es de antes de que la accion existiera, y su
+# consumidor nunca tuvo nada que referenciar. Sin esta distincion el check gritaba sobre
+# SEIS tags legitimos de julio, y un check que grita sobre lo correcto entrena a ignorarlo
+# -- que es justo el fallo que este archivo existe para evitar.
+# La fecha se DERIVA del repo. Hardcodearla es la lista a mano otra vez.
+nacimiento() {
+  git log --diff-filter=A --format=%ct --reverse -- ".github/actions/$1/action.yml" \
+       ".github/actions/$1/action.yaml" 2>/dev/null | head -1
+}
+
 # faltan_en <ref> -> imprime las acciones ausentes (vacio si estan todas)
+# <solo_posteriores>: si es "si", ignora las acciones que NO existian cuando se corto el ref.
 faltan_en() {
-  local ref="$1" a faltan=""
+  local ref="$1" solo_post="${2:-no}" a faltan="" tref
+  tref="$(git log -1 --format=%ct "$ref" 2>/dev/null || echo 0)"
   for a in $ACCIONES; do
+    if [ "$solo_post" = "si" ]; then
+      local nac; nac="$(nacimiento "$a")"
+      # `-lt` sobre epochs: si el ref es anterior al nacimiento, la accion no le corresponde.
+      [ -n "$nac" ] && [ "$tref" -lt "$nac" ] && continue
+    fi
     # `action.yml` O `action.yaml`: GitHub acepta las dos y exigir una sola daria falsos rojos.
     if ! git cat-file -e "$ref:.github/actions/$a/action.yml" 2>/dev/null \
       && ! git cat-file -e "$ref:.github/actions/$a/action.yaml" 2>/dev/null; then
@@ -97,23 +115,43 @@ fi
 # y falta en los diez tags inmutables, o sea que fijar una version concreta (la practica
 # recomendada) da un CI roto mientras que el alias movil (la desaconsejada) funciona.
 echo
-echo "── INFORMATIVO: tags ya publicados (no bloquean; arreglarlos es decision del dueño)"
-ROTOS=0
-for ref in $(git tag --list 'v*' | sort -V); do
-  f="$(faltan_en "$ref")"
-  if [ -z "$f" ]; then
-    echo "  ✓ $ref ($(git rev-parse --short "$ref"))"
-  else
-    echo "  ⚠ $ref ($(git rev-parse --short "$ref")) — le FALTA:$f"
-    ROTOS=$((ROTOS + 1))
+echo "── INFORMATIVO: REGRESIONES entre alias mayores (no bloquean; son decision del dueño)"
+# La senal util NO es "a este tag le falta una accion" -- un tag anterior al nacimiento de la
+# accion no le debe nada, y avisar de eso es ruido que entrena a ignorar el check.
+#
+# La senal util es una REGRESION: que el alias mayor MAS NUEVO carezca de algo que el ANTERIOR
+# si tiene. Eso es lo que muerde de verdad, porque dependabot propone el alias mas alto como
+# "lo ultimo" y el consumidor acaba con MENOS de lo que tenia.
+#
+# Caso medido 2026-08-11 (reportado por makro_logistica): `alcance` nacio el 05-ago, DESPUES de
+# publicar v3 (03-ago). Solo el alias `v2` se movio para incluirla; nunca se publico un v3.x con
+# ella. Nadie borro nada -- pero @v3 ofrece MENOS que @v2, y ese es el defecto.
+ALIAS="$(git tag --list 'v[0-9]' | sort -V)"
+REGRES=0
+ANT=""
+for a in $ALIAS; do
+  tiene="$(for x in $ACCIONES; do
+             git cat-file -e "$a:.github/actions/$x/action.yml" 2>/dev/null && printf '%s ' "$x"
+           done)"
+  echo "  · $a ($(git rev-parse --short "$a")) ofrece: ${tiene:-(ninguna)}"
+  if [ -n "$ANT" ]; then
+    for x in $ANT_TIENE; do
+      case " $tiene " in *" $x "*) ;; *)
+        echo "    ⚠️  REGRESION: $a NO ofrece '$x', y $ANT sí."
+        echo "        dependabot propone el alias mas alto como 'lo ultimo': un consumidor que"
+        echo "        acepte el bump se queda con MENOS de lo que tenia, y sus jobs dependientes"
+        echo "        salen 'skipping' — indistinguible de un skip legitimo."
+        REGRES=$((REGRES + 1)) ;;
+      esac
+    done
   fi
+  ANT="$a"; ANT_TIENE="$tiene"
 done
-[ "$ROTOS" -gt 0 ] && {
+[ "$REGRES" -gt 0 ] && {
   echo
-  echo "  ⚠️  $ROTOS tag(s) publicados NO contienen todas las acciones."
-  echo "      Un repo que fije uno de esos y use la accion tendra los gates apagados y"
-  echo "      NO se vera en la pantalla de checks. Reportado por makro_logistica el"
-  echo "      2026-08-07 (v2) y otra vez el 2026-08-11 (v3): es reincidencia, no anecdota."
+  echo "  ⚠️  $REGRES regresion(es) entre alias. Arreglo SIN reescribir historia: publicar una"
+  echo "      version nueva del mayor afectado desde un ref completo y mover su alias ahi."
+  echo "      Retaguear una version publicada rompe la inmutabilidad; mover un alias es su funcion."
 }
 
 echo

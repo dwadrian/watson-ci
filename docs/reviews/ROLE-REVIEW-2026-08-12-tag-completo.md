@@ -18,22 +18,36 @@ algo que no es. Lo que lo respalda:
 ⛔ **Este GO no es precedente para saltarse el loop en algo que sí toque las recetas.** Un cambio
 que altere el veredicto de CI de la flota necesita el loop completo con el rol de seguridad.
 
-## El hallazgo, y por qué es peor de lo reportado
+## El hallazgo — y DOS diagnósticos míos que hubo que corregir
 
-Se reportó que el linaje `v3` no tenía `.github/actions/`. Al construir el check salió el alcance
-real:
+Se reportó que el linaje `v3` no tenía `.github/actions/`. Confirmado. Pero mis dos primeras
+lecturas del alcance fueron **falsas**, y las dos las corrigió mirar la salida en vez de fiarme:
+
+**Diagnóstico 1, falso: *"diez tags rotos"*.** `alcance` nació el **2026-08-05**; seis de esos tags
+son de **julio**. Un tag anterior al nacimiento de una acción **no le debe nada**, y avisar de eso
+es ruido que entrena a ignorar el check — el fallo que este archivo existe para evitar.
+
+**Diagnóstico 2, falso: *"v3 se cortó de un commit viejo"*.** `v3.0.0` es un tag **anotado creado
+el 03-ago**. La historia real es más aburrida: `alcance` se añadió a `main` el 05-ago, **después**
+de publicar v3, y solo el alias `v2` se movió para incluirla. **Nunca se publicó un `v3.x` con
+ella.** Nadie borró nada.
+
+⚠️ **Y al arreglar el primero me pasé de rosca:** eximir *"todo lo anterior al nacimiento"* eximía
+también a `v3`, o sea que **mi corrección apagaba la detección del caso que motivó el check**.
+Fail-open en mi propio guard, en el mismo archivo.
+
+**La señal correcta es la REGRESIÓN:** que el alias mayor **más nuevo** carezca de algo que el
+anterior sí tiene. Eso es lo que muerde, porque dependabot propone el alias más alto como *"lo
+último"* y el consumidor **acaba con menos de lo que tenía**.
 
 ```
-✓ v2   (alias MÓVIL)
-✗ v1  v1.0.0  v1.1.0  v1.1.1  v2.0.0  v2.0.1  v2.2.0  v2.2.1  v3  v3.0.0
+· v1 ofrece: (ninguna)
+· v2 ofrece: alcance
+· v3 ofrece: (ninguna)
+  ⚠️ REGRESION: v3 NO ofrece 'alcance', y v2 sí.
 ```
 
-**`alcance` existe en un solo ref, y es el alias móvil.** Los diez tags inmutables no la tienen.
-
-Eso **invierte el consejo de seguridad**: fijar una versión concreta o un SHA —la práctica
-correcta, la que este mismo repo predica— da un CI roto, mientras que el alias móvil, el
-desaconsejado, funciona. No es un release malo: es que **la forma segura de consumir este repo era
-la que fallaba**.
+Cero ruido sobre julio, y el caso real detectado.
 
 **Nadie está roto hoy**: el único consumidor real de la acción es `makro_logistica`, SHA-pinneado
 al commit que sí la tiene. El daño llega **por dependabot**, que propone el alias roto a cada repo
