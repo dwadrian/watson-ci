@@ -1,0 +1,104 @@
+{
+    "advisories": {
+        "league/commonmark": [
+            {
+                "advisoryId": "PKSA-5mzr-szzf-z6cn",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=2.0.0,<2.9.0",
+                "title": "league/commonmark: Denial of service via deeply nested XML output",
+                "cve": null,
+                "link": "https://github.com/advisories/GHSA-mj63-m3rc-8ppr",
+                "reportedAt": "2026-08-06T20:42:54+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-mj63-m3rc-8ppr"
+                    }
+                ],
+                "severity": "medium"
+            },
+            {
+                "advisoryId": "PKSA-cqd6-fg4n-nxpf",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=2.0.0,<2.9.0",
+                "title": "league/commonmark: Denial of service via colliding heading slugs",
+                "cve": null,
+                "link": "https://github.com/advisories/GHSA-mh25-x5hq-wrqp",
+                "reportedAt": "2026-08-06T20:41:45+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-mh25-x5hq-wrqp"
+                    }
+                ],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-1q6p-sqkj-8mmj",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=1.5.0,<2.9.0",
+                "title": "league/commonmark:  Denial of service via duplicate footnote definitions",
+                "cve": null,
+                "link": "https://github.com/advisories/GHSA-jfm3-95jq-q3rf",
+                "reportedAt": "2026-08-06T20:40:53+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-jfm3-95jq-q3rf"
+                    }
+                ],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-mc58-w91n-f5gv",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=1.5.0,<2.9.0",
+                "title": "league/commonmark: Denial of service via adjacent inline attribute blocks",
+                "cve": null,
+                "link": "https://github.com/advisories/GHSA-g2gp-3wwq-f4ph",
+                "reportedAt": "2026-08-06T20:39:52+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-g2gp-3wwq-f4ph"
+                    }
+                ],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-t21r-vtr5-3mdz",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=0.6.0,<2.9.0",
+                "title": "league/commonmark: Quadratic-time denial of service when parsing crafted Markdown",
+                "cve": "CVE-2026-71488",
+                "link": "https://github.com/advisories/GHSA-2q4p-g7hv-5rgv",
+                "reportedAt": "2026-08-06T20:37:20+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-2q4p-g7hv-5rgv"
+                    }
+                ],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-scnn-p8mm-jbft",
+                "packageName": "league/commonmark",
+                "affectedVersions": ">=1.5.0,<=2.8.3",
+                "title": "league/commonmark: AttributesExtension href/src unsafe-link filter bypass via embedded control bytes",
+                "cve": "CVE-2026-71478",
+                "link": "https://github.com/advisories/GHSA-29pj-957v-52mc",
+                "reportedAt": "2026-08-06T20:30:39+00:00",
+                "sources": [
+                    {
+                        "name": "GitHub",
+                        "remoteId": "GHSA-29pj-957v-52mc"
+                    }
+                ],
+                "severity": "medium"
+            }
+        ]
+    },
+    "abandoned": [],
+    "filter": []
+}

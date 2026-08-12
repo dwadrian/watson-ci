@@ -1,0 +1,58 @@
+name: gate de roles (backstop)
+
+# La capa 1 (.claude/agents/config.json) solo actua al commitear desde una sesion de watson.
+# Esto cubre el resto: no se evade con un checkout ni depende de desde donde se commitee.
+# EL EVENTO QUE IMPORTA ES EL TAG, no el push a main. La flota consume
+# `verify-*.yml@v2`, asi que la distribucion ocurre al MOVER `v2` -- y la primera version de
+# este workflow no lo escuchaba. Ruta completa sin gate que el rol reprodujo:
+#   rama != main -> push no dispara -> git tag -f v2 && push --force -> los 17 consumen
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Sin esto, cada push encima del anterior deja corriendo los dos. Este repo ya agoto su
+# cuota de minutos una vez, y el gate corre en push Y en pull_request.
+concurrency:
+  group: gate-roles-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  roles:
+    name: ROLE-REVIEW en cambios de distribucion
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # OBLIGATORIO. Con el shallow por defecto el rango de commits nunca resuelve y el
+          # gate se degrada SIEMPRE a "solo HEAD" — un no-op silencioso, la misma clase que
+          # ya mordio al filtro de solo-documentacion esta semana.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tests del propio backstop
+        run: bash tests/gate-roles.test.sh
+
+      - name: Backstop de roles
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: bash tools/gate-roles.sh "$BASE" "$HEAD_SHA"
+
+      # En un push de TAG lo que importa NO es que el commit apuntado cumpla, sino que este
+      # CONTENIDO en `main` -- lo que no esta en main no paso por los gates. Sin esto, una rama
+      # lateral con un commit malicioso y otro inocuo encima daba VERDE y ya estaba distribuido.
+      - name: Backstop de roles (el tag debe apuntar a codigo de main)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # `--depth=0` NO existe: `fatal: depth 0 is not a positive number`, y con el shell
+          # `-e` de Actions el step abortaba ANTES de llamar al gate. O sea que este arreglo
+          # nunca se ejecuto ni una vez, y el step salia rojo por una razon que no era la suya.
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          bash tools/gate-roles.sh --tag "${{ github.sha }}" main

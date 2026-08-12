@@ -66,3 +66,19 @@ jobs:
           persist-credentials: false
       - name: Veredictos esperados sobre fixtures conocidos
         run: bash tests/expect-audit-decision.sh
+
+      # Excepciones de dependencias que CADUCAN. Este script decide si un advisory bloquea
+      # en los 17 repos, así que su suite corre ANTES de que se pueda publicar un tag.
+      # Los fixtures son capturas REALES (npm de una app Expo, composer de un repo Laravel,
+      # pip-audit 2.10.1): los tres hallazgos que más cambiaron el diseño no habrían
+      # aparecido con datos inventados.
+      - name: Excepciones de auditoría — decisión sobre corpus real
+        run: bash tests/audit-exceptions.test.sh
+
+      # Un tag no puede prometer lo que no contiene. Prometido el 2026-08-07 tras el primer
+      # reporte, se quedó en el backlog, y el 2026-08-11 volvió a morder con `v3` — que no
+      # perdió un archivo sino el DIRECTORIO entero de acciones.
+      # Bloquea sobre el ref que se publicaría; los tags ya rotos se listan sin bloquear
+      # (arreglarlos exige mover tags inmutables y eso es decisión del dueño, no de un test).
+      - name: Un tag contiene las acciones que promete
+        run: bash tests/tag-completo.test.sh

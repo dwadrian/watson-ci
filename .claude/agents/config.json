@@ -1,0 +1,27 @@
+{
+  "_comment": "SOLO CONFIGURACION. Este repo es PUBLICO: aqui NO va ni un .mjs ni un settings.json. Un hook git-trackeado en un repo publico es RCE local -- un tercero abre un PR que toca .claude/hooks/cli.mjs, tu haces `gh pr checkout` para revisarlo, abres Claude Code y su SessionStart ejecuta el codigo del atacante, ANTES del merge. Branch protection no lo mitiga porque el ataque ocurre en el CHECKOUT, no en el merge. Los hooks que aplican estos gates son los del repo desde el que se commitea (watson); este archivo solo les dice COMO comportarse con este repo: pre-tool.mjs:921 lee la config del repo DESTINO.",
+
+  "version": "1.0",
+  "project": { "name": "watson-ci", "type": "generic" },
+
+  "roles": {
+    "enabled": true,
+    "shadow": false,
+    "reason": "ENFORCE desde 2026-08-07. Este repo tiene el mayor blast radius de la flota: sus recetas las consumen 17 repos. El 2026-08-05 se rompio el CI de los 17 DESDE AQUI y ningun gate lo detecto, porque no habia config y el default de roles es enabled:false -- por eso ese dia el gate si pidio bitacora y backlog pero NO el loop de roles, sobre un cambio que tocaba a toda la flota.",
+
+    "_risk_globs_nota": "getRolesConfig hace {...ROLES_DEFAULTS, ...roles}: risk_globs REEMPLAZA, no suma. Los dos primeros son defaults del harness y se CONSERVAN a proposito: sin el de config.json, este mismo archivo se podria editar para apagar el gate sin pasar por revision, o sea la config del gate no estaria protegida por el gate. Lo cazo el rol de seguridad en la ronda 1 del plan, donde los tres globs propuestos los BORRABAN.",
+    "risk_globs": [
+      "(^|/)\\.claude/agents/config\\.json$",
+      "(^|/)\\.claude/.*\\.(mjs|sh|bash)$",
+      "^\\.github/.*",
+      "^tools/.*",
+      "^tests/.*"
+    ]
+  },
+
+  "secrets": {
+    "enabled": false,
+    "shadow": true,
+    "reason": "shadow como el resto de la flota. El freno real de secretos de este repo vive en su propio CI (semgrep p/secrets), que corre en cada push y bloquea siempre."
+  }
+}
