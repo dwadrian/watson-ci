@@ -748,7 +748,7 @@ Expected: los 14 anteriores pasan; FAIL en los 5 de pip con `tools/dep-gate-pip.
 
 Copiar íntegro el cuerpo del paso `📦 pip-audit` de `verify-python.yml:234-339` con estos cambios y **ningún otro**:
 
-1. Cabecera del script (shebang, comentario, `set -uo pipefail`), `RAIZ`/`cd`, `export AUDIT_LEVEL=high`, la guarda de symlink sobre `$EXC` y la función `num_o_muere`, **igual que en los dos anteriores**.
+1. Cabecera del script (shebang, comentario, `set -uo pipefail`), `RAIZ`/`cd`, `export AUDIT_LEVEL=high` y la guarda de symlink sobre `$EXC`: **igual que en los dos anteriores**. La función `num_o_muere` se copia **del de composer** — el de npm **no la tiene y no la necesita**, porque no cuenta nada con `jq`: delega la decisión entera en el filtro y solo traduce su exit code. Copiarla ahí sería código muerto; darla por existente en los tres es el error que esta línea evita.
 2. `AUDIT_OPTIONAL` se sigue leyendo del entorno (viene del input `python-audit-optional`, que **no** se retira).
 3. Borrar el bloque `IGNORE_ARGS` (líneas 283-290) y su uso en `audit_source`.
 3b. **Guarda de array vacío bajo `set -u`** *(hallazgo de la ronda 1)*. El cuerpo original expande `"${reqfiles[@]}"` (`:331`) y en **bash 3.2 —el entorno declarado para depurar— eso revienta** con `reqfiles[@]: unbound variable` cuando el array está vacío. Camino alcanzable: `pylock.toml` presente y cero `requirements*.txt`. Y muere con **1**, que bajo este contrato debería ser 2. Sustituir el bucle por:
@@ -1013,7 +1013,7 @@ de subagente sin comprobarlo.
 | 4 | ALTA | perder `set -e` abre un fail-open: `jq` roto → «composer audit OK» en verde | **CERRADO** · `num_o_muere` en los tres |
 | 5 | ALTA | el plan colapsaba el `2` a `1` en composer, donde él mismo lo prohíbe | **CERRADO** · `exit 2` |
 | 6 | ALTA | no hay protección de rama: el README prometía una revisión que no existe | **CERRADO** · README reescrito: «deja rastro y recuerda, no autoriza» |
-| 7 | MEDIA | un symlink derrota el «solo en la raíz» (`[ -f ]` lo sigue) | **CERRADO** · guarda `[ -h ]` |
+| 7 | MEDIA | un symlink derrota el «solo en la raíz» (`[ -f ]` lo sigue) | **CERRADO** · guarda `[ -h ]` — y **confirmado ejecutando**: ver abajo |
 | 8 | MEDIA | `AUDIT_LEVEL` **sí** cambia el veredicto (`audit-exceptions.sh:25`) | **CERRADO** · `export AUDIT_LEVEL=high` + Prohibido corregido |
 | 9 | MEDIA | rutas fijas en `/tmp`: audit rancio leído como fresco en `ci-local` | **CERRADO** · `mktemp` + `trap` |
 | 10 | MEDIA | el control de `GITHUB_ACTIONS` solo cubría el veredicto que no puede moverse | **CERRADO** · bucle sobre los dos |
@@ -1028,7 +1028,61 @@ el propio watson-ci, ramas no-default, la divergencia con `origin` (nadie hizo `
 contar) y un denominador que suma `lnbp-web-2022`, cuyo `origin` es **Bitbucket** y por tanto nunca
 ejecuta en GitHub Actions.
 
-**Lo que el rol atacó y aguantó** (importa tanto como lo que cayó): `pull_request_target` no existe
+### Cobertura ausente, y lo que se cubrió a mano en su lugar
+
+**El rol de code-reviewer de shell se despachó TRES veces y ninguna entregó reporte.** Se declara
+como hueco, no se tapa: *asserts que no discriminan* y *bash 3.2* siguen sin revisión de
+especialista. Un verificador lanzado que no entrega da falsa sensación de cobertura — es peor que
+no lanzarlo — así que queda escrito aquí y condiciona el GO.
+
+Lo que sí se pudo cubrir ejecutando, por ser mecánico:
+
+**1 · Fidelidad de los stubs — VERIFICADA.** El stub de `npm` del plan, extraído a un ejecutable
+real y puesto en el PATH contra el fixture `npm-makro-12high.json`:
+
+```
+npm ci --ignore-scripts …            → rc=0
+npm audit --audit-level=high         → rc=1   (correcto: hay 12 high)
+npm audit --json | audit-exceptions.sh --filter <2 excepciones vigentes> npm
+                                     → rc=0, y reporta 2 "excepción aplicada"
+```
+El JSON del stub tiene la forma que espera el `case` de `audit-exceptions.sh:221`. El diseño de
+test se sostiene.
+
+**2 · bash 3.2 — las dos construcciones nuevas, PROBADAS en `3.2.57(1)-release` real.**
+
+```
+for f in "${reqfiles[@]}";              → reqfiles[@]: unbound variable   (muere)
+for f in ${reqfiles[@]+"${reqfiles[@]}"} → llega al final                 (correcto)
+```
+Y `num_o_muere` contra 12 entradas hostiles: acepta `0`, `12`, `999999999`; rechaza vacío, `-1`,
+`1.5`, `abc`, `12x`, `0x1f`, con espacios delante o detrás, y multilínea. Rechazar es **fail-closed**,
+así que un falso positivo bloquea en vez de dejar pasar.
+
+**3 · ¿Los asserts discriminan? — MUTACIÓN, no lectura.** Es la casilla que el rol ausente debía
+cubrir. Se cubrió fabricando scripts defectuosos y midiendo cuántos asserts los cazan:
+
+| Prueba | Resultado |
+|---|---|
+| **(A) script ausente** | `rc=127`, y **los tres** valores esperados (0/1/2) lo rechazan, porque los asserts comparan por **igualdad exacta**. El assert de la anotación también falla: `out.txt` no contiene `::warning::`. Es la lección de los cuatro incidentes previos aplicada — un `!= 0` lo habría aceptado |
+| **(B) mutante que exime de MÁS** (verde en cuanto existe el archivo, sin mirar ids) | **cazado por 6 de 9**: sobre-exención, vencida, comodín, ENOLOCK, control-ajena, sin-package |
+| **(C) mutante que exime de MENOS** (ignora el archivo, siempre bloquea) | **cazado por 5 de 9**: dos-vigentes, anotación, comodín, ENOLOCK, sin-package |
+
+Cada clase de defecto cae por **varios asserts independientes**, no por uno: el bloque no tiene un
+único punto de detección que se pueda perder en un refactor.
+
+⚠️ **Y una trampa en el propio arnés de medición, que casi falsea este resultado:** la primera
+corrida dio *"1 de 1"*. En **zsh una variable sin comillas NO se parte en palabras** —al contrario
+que en bash—, así que el bucle iteró una sola vez. Repetido bajo `/bin/bash` explícito con un array.
+Misma clase que el `grep` envuelto que este sistema ya tiene documentada: **un arnés se valida
+contra el shell real, no contra el que uno cree que tiene.**
+
+**4 · El hallazgo 7 (symlink), CONFIRMADO ejecutando.** `audit-exceptions.sh` ya rechaza lo que no
+es fichero regular —`⛔ /dev/null no es un fichero regular`— pero **acepta un symlink a un archivo
+regular**: `rc=0` y excepción aplicada. La guarda `[ -h "$EXC" ]` de los `dep-gate-*` es necesaria;
+el chequeo que ya existía aguas arriba **no** la cubre.
+
+**Lo que el rol de seguridad atacó y aguantó** (importa tanto como lo que cayó): `pull_request_target` no existe
 en ninguna receta ni stub —solo `workflow_call`, y los stubs declaran `permissions: contents: read`,
 que es el techo del token—; cero interpolación `${{ }}` de dato del repo auditado dentro de un
 `run:`; comodines, `all` y prefijos rechazados de verdad; `2026-02-30` inválida por round-trip; una
