@@ -230,7 +230,12 @@ repo_npm() {
 
 # corre_gate <script> <raiz> -> imprime el rc; deja la salida combinada en $TMP/out
 corre_gate() {
-  PATH="$TMP/bin:$PATH" bash "$1" "$2" > "$TMP/out" 2>&1
+  # GITHUB_ACTIONS=true NO es decorativo: Task 1 condiciona la anotacion a esa variable y su
+  # propio assert exige que en LOCAL no se anote. Sin fijarla aqui, el assert de "la excepcion
+  # se ANOTA" es INSATISFACIBLE: las dos suites no pueden estar verdes en el mismo entorno.
+  # Reproducido por dos roles: audit-exceptions.test.sh falla en CI, dep-gate.test.sh en el Mac,
+  # y Task 5 Step 2 las encadena con `&&`.
+  PATH="$TMP/bin:$PATH" GITHUB_ACTIONS=true bash "$1" "$2" > "$TMP/out" 2>&1
   printf '%s' "$?"
 }
 
@@ -402,12 +407,34 @@ workspace** antes. Sustituir el paso de limpieza (`verify-node:137-138`) por:
           mkdir -p "$RUNNER_TEMP/watson-tools"
           cp .watson-ci-tooling/tools/*.sh "$RUNNER_TEMP/watson-tools/"
           chmod +x "$RUNNER_TEMP/watson-tools"/*.sh
+          # El `cp` de arriba NO garantiza nada por si solo: se comprueba POR NOMBRE lo que este
+          # paso promete entregar. Ver el aviso de abajo.
+          for s in audit-exceptions.sh dep-gate-npm.sh; do
+            [ -f "$RUNNER_TEMP/watson-tools/$s" ] || {
+              echo "::error::el tooling de watson-ci@${{ inputs.tooling-ref }} no trae tools/$s."
+              echo "  Sin el, el gate de dependencias moriria con exit 127 doscientas lineas mas abajo,"
+              echo "  con pinta de fallo de infraestructura. Se falla AQUI, nombrando lo que falta."
+              exit 1
+            }
+          done
           rm -rf .watson-ci-tooling
 ```
 
-El `cp` es **fail-closed por construcción**: los `run:` de GitHub corren con `bash -e`, así que si
-el ref del tooling no trae los `.sh` el paso muere **aquí**, con un mensaje que nombra el archivo
-que falta, en vez de degradarse a un `127` doscientas líneas más abajo.
+⚠️ **Corrección de la ronda 2 — aquí este plan afirmaba algo FALSO.** Decía que el `cp` era
+*"fail-closed por construcción, porque los `run:` corren con `bash -e`"*. Medido:
+
+```
+$ git ls-tree --name-only v3 tools/
+tools/audit-exceptions.sh   tools/gate-roles.sh
+tools/requirements-pip-audit.txt   tools/requirements-semgrep.txt
+```
+
+**`v3` SÍ trae dos `.sh`**, así que el glob casa, el `cp` **sale con éxito**, y el `exit 127`
+reaparece más abajo al faltar `dep-gate-npm.sh` — exactamente el fallo que este paso existía para
+impedir. Un glob no puede comprobar la presencia de un archivo concreto: hay que **nombrarlo**.
+La comprobación explícita de arriba es lo que convierte la promesa en garantía.
+
+*(Y el nombre de cada receta cambia: `dep-gate-composer.sh` en php, `dep-gate-pip.sh` en python.)*
 
 `dep-gate-*.sh` y `audit-exceptions.sh` acaban en el **mismo directorio**, que es lo que hace que
 `FILTRO="$AQUI/audit-exceptions.sh"` resuelva.
@@ -531,6 +558,14 @@ r="$(corre_gate tools/dep-gate-composer.sh "$d")"
 d="$TMP/sinlock-$RANDOM"; mkdir -p "$d"; printf '{"name":"x/y"}\n' > "$d/composer.json"
 r="$(corre_gate tools/dep-gate-composer.sh "$d")"
 [ "$r" = "1" ] && ok "composer.json sin lock: sigue bloqueando" || fail "sin lock" "1" "$r"
+
+# Discriminante del `2`, que composer NO tenia: con el mutante `exit 1` este bloque pasaba 4/5.
+# Sin un assert que exija 2, toda la maquineria fail-closed (num_o_muere, jq -e ., la propagacion
+# del rc del filtro) se implementa sin un solo test que la vea.
+d="$(repo_composer composer-zigterback-6adv.json "PKSA-* $VIGENTE comodin")"
+r="$(corre_gate tools/dep-gate-composer.sh "$d")"
+[ "$r" = "2" ] && ok "comodin: exit 2 (composer tampoco tenia discriminante del 2)" \
+  || fail "comodin composer" "2" "$r"
 ```
 
 - [ ] **Step 2: Correr y verlo fallar**
@@ -737,6 +772,23 @@ r="$(corre_gate tools/dep-gate-pip.sh "$d")"
 d="$TMP/pyproj-$RANDOM"; mkdir -p "$d"; printf '[project]\nname="x"\n' > "$d/pyproject.toml"
 r="$(corre_gate tools/dep-gate-pip.sh "$d")"
 [ "$r" = "1" ] && ok "pyproject sin lockfile: sigue bloqueando" || fail "pyproject" "1" "$r"
+
+# ⛔ SIN LOS DOS DE ABAJO, EL BLOQUE PIP ENTERO PASA 5/5 CONTRA UN GATE DE DOS LINEAS QUE SOLO
+# DICE `exit 1`. Reproducido por dos roles: los 5 asserts anteriores esperan `1`, asi que un
+# script inservible los satisface todos — y por eso el "mecanismo inerte" (3c-bis) no se veia.
+# Los ids salen del corpus real: jq -r '.dependencies[].vulns[].id' del fixture.
+d="$(repo_pip pipaudit-jinja2-6vulns.json \
+      "PYSEC-2021-66 $VIGENTE x"   "PYSEC-2019-217 $VIGENTE x" \
+      "PYSEC-2026-1473 $VIGENTE x" "PYSEC-2026-1471 $VIGENTE x" \
+      "PYSEC-2026-1474 $VIGENTE x" "PYSEC-2026-1475 $VIGENTE x")"
+r="$(corre_gate tools/dep-gate-pip.sh "$d")"
+[ "$r" = "0" ] && ok "las 6 exentas: VERDE (el mecanismo SI hace algo en python)" \
+  || fail "el mecanismo es INERTE en python" "0" "$r"
+
+d="$(repo_pip pipaudit-jinja2-6vulns.json "PYSEC-* $VIGENTE comodin")"
+r="$(corre_gate tools/dep-gate-pip.sh "$d")"
+[ "$r" = "2" ] && ok "comodin: exit 2 (pip no tenia NINGUN discriminante del 2)" \
+  || fail "comodin pip" "2" "$r"
 ```
 
 - [ ] **Step 2: Correr y verlo fallar**
@@ -764,6 +816,32 @@ Copiar íntegro el cuerpo del paso `📦 pip-audit` de `verify-python.yml:234-33
 ```
 
 3c. **`num_o_muere "$vulns" vulns`** justo después del `vulns=$(jq …)` de `audit_source` (`:305`). Sin `-e`, un `jq` que falla deja `vulns` vacío, `[ "$vulns" -gt 0 ]` es falso, `[ "$rc" -ne 0 ]` con `rc=0` también, y `audit_source` **devuelve 0**: verde con cero cobertura.
+
+3c-bis. ⛔ **EL MECANISMO ERA INERTE EN PYTHON — sin esto, la Task 4 entera no entrega nada.**
+Dos roles lo reprodujeron por separado declarando las **6** vulns del corpus como exentas y vigentes:
+
+```
+── auditando: ./requirements.txt
+vulns conocidas en './requirements.txt': 0
+::error::pip-audit salio con rc=1 … con JSON valido y 0 vulns — fail-closed.
+RC=1          ← ninguna excepción puede poner Python en verde
+```
+
+**Causa:** ese `rc` es **PRE-filtro**. `pip-audit` sale `1` **por haber encontrado** justo las vulns
+que estás eximiendo. Tras filtrar, `vulns=0`, se salta el bloqueo por vulns… y cae en el check de
+`rc`, que lo relee como *"la herramienta falló"*. Corregir `verify-python.yml:317`:
+
+```bash
+    # `rc` es PRE-filtro: pip-audit sale !=0 por HABER ENCONTRADO vulns. Si hubo filtrado, ese rc
+    # ya esta explicado por los hallazgos que el filtro acaba de eximir; releerlo como "fallo de la
+    # herramienta" deja el mecanismo INERTE. Solo es diagnostico cuando NO se filtro nada.
+    if [ "$rc" -ne 0 ] && [ ! -f "$EXC" ]; then
+```
+
+3c-ter. **El colapso `2→1` sigue vivo en pip, y la ronda 1 lo dio por cerrado.** Verificado:
+`verify-python.yml:302` y `:322` hacen `return 1` con mensajes que dicen *"la herramienta falló"* —
+el mismo defecto que este plan corrige en composer con el argumento de que *"decirlo con el código
+equivocado es el colapso que este mismo plan prohíbe"*. Ambos pasan a `return 2`.
 3d. **Rutas temporales por `mktemp`**, no `/tmp/pipaudit_$$.json`: `$$` se repite entre corridas en la máquina del dueño, donde estos scripts también van a `ci-local`.
 4. En `audit_source`, entre la validación del JSON y el conteo de `vulns`, insertar:
 
@@ -949,6 +1027,12 @@ principio que ese archivo ya defiende en `:44-45`—:
 # lista a mano es lo que se olvida de actualizar, que es la clase de este mismo incidente.
 SCRIPTS="$(grep -rhoE '(watson-tools|\.watson-ci-tooling/tools)/[a-z0-9-]+\.sh' .github/workflows/ \
            | sed 's|.*/||' | sort -u)"
+# ⛔ FAIL-OPEN, y lo escribi yo para cerrar un hueco de aseguramiento falso. Verificado HOY: el
+# grep devuelve VACIO -> el bucle da CERO iteraciones -> pasa en verde. Un check que no puede
+# fallar no es un check. Si no se deriva nada, es que el cableado no esta: eso es un ROJO.
+if [ -z "$SCRIPTS" ]; then
+  fail "no se derivo ningun tools/*.sh de los workflows — o no hay cableado, o el patron no casa"
+fi
 for s in $SCRIPTS; do
   git cat-file -e "$OBJETIVO:tools/$s" 2>/dev/null \
     || fail "$OBJETIVO — le FALTA tools/$s, que un workflow invoca por ruta"
@@ -1094,7 +1178,11 @@ línea mala invalida el archivo entero y los duplicados se resuelven por la fech
 
 Mecánicos: comando + resultado esperado. Ninguno es «que quede bien».
 
-- [ ] `bash tests/dep-gate.test.sh` → `dep-gate: TODO VERDE`, **19 asserts**
+- [ ] `bash tests/dep-gate.test.sh` → `dep-gate: TODO VERDE`, **22 asserts** *(19 + los 3 discriminantes que la ronda 2 exigió: camino verde de pip, comodín de pip, comodín de composer)*
+- [ ] **Las dos suites verdes en el MISMO entorno.** `bash tests/audit-exceptions.test.sh && bash tests/dep-gate.test.sh` en local **y** con `GITHUB_ACTIONS=true`. Medido en la ronda 2: sin el arreglo de `corre_gate`, una de las dos está siempre roja
+- [ ] **MUTACIÓN del bloque pip:** `printf '#!/usr/bin/env bash\nexit 1\n' > tools/dep-gate-pip.sh` → **la suite falla**. Sin los asserts nuevos pasaba **5/5**
+- [ ] **MUTACIÓN del bloque composer:** el mismo mutante → **falla**. Antes pasaba 4/5
+- [ ] **El mecanismo NO es inerte en python:** con las 6 vulns del corpus exentas y vigentes, `dep-gate-pip.sh` → **0**
 - [ ] `bash tests/audit-exceptions.test.sh` → `TODO VERDE`, **22 asserts** (17 previos + 5 de Task 1)
       ⚠️ Son **17**, no 18: el `ROLE-REVIEW-2026-08-12-audit-exceptions.md` decía 18 y este plan
       heredó la cifra sin ejecutarla. Contado corriendo el archivo, que es la única fuente que no
