@@ -6,16 +6,12 @@
 > Estados: `## Ahora` (WIP, ideal 1) · `## Siguiente` (comprometido) · `## Después` ·
 > `## Bloqueado` (nombra a QUIÉN desbloquea) · `## Decisión del dueño`
 
-## Bloqueado
+## Ahora
 
-- [ ] **Mover el alias `v2` para que la flota reciba el filtro de solo-docs** — el cambio está en
-  `main` pero los 17 repos consumen `@v2`, y mover un tag exige `git push --force origin v2`, que
-  el harness bloquea. **Desbloquea: Adrián**, con
-  `git tag -f v2 <sha> && git push --force origin v2`. Hasta entonces el sangrado de minutos
-  sigue exactamente igual.
-  · origen: `docs/bitacoras/BITACORA-2026-08-05-paths-solo-docs.md`
+_Sin trabajo activo declarado. El siguiente que arranque se mueve aquí._
 
 ## Siguiente
+
 
 - [ ] **Medir el reparto secrets vs SAST en un repo grande antes de prometer el ahorro** — en
   watson el escaneo de secretos tarda ~9 s, pero watson es chico y el ahorro se estimó sobre eso.
@@ -26,6 +22,7 @@
   · origen: `docs/bitacoras/BITACORA-2026-08-05-paths-solo-docs.md` — límite declarado
 
 ## Después
+
 
 - [ ] **El `pip install` de semgrep sigue corriendo en pushes de solo-docs** — es necesario porque
   el escaneo de secretos lo usa, así que el ahorro es de los pasos caros, no del arranque del job
@@ -49,3 +46,18 @@
   propio sin guarda; cuesta segundos y conserva la propiedad. La alternativa —aceptar el hueco—
   hay que declararla, no heredarla por omisión.
   · origen: feedback de makro_logistica, 2026-08-06
+
+## Bloqueado
+
+
+- [ ] **Mover el alias `v2` para que la flota reciba el filtro de solo-docs** — el cambio está en
+  `main` pero los 17 repos consumen `@v2`, y mover un tag exige `git push --force origin v2`, que
+  el harness bloquea. **Desbloquea: Adrián**, con
+  `git tag -f v2 <sha> && git push --force origin v2`. Hasta entonces el sangrado de minutos
+  sigue exactamente igual.
+  · origen: `docs/bitacoras/BITACORA-2026-08-05-paths-solo-docs.md`
+
+## Decisión del dueño
+
+_Ninguna abierta. El movimiento del alias `v2` vive en `## Bloqueado`
+porque tiene dueño y comando concretos — no falta decidir nada, falta ejecutarlo._
