@@ -81,6 +81,48 @@ else
       [ -z "$f" ] && continue
       TOTAL=$((TOTAL + 1))
       case "$f" in
+        # Las extensiones EJECUTABLES van PRIMERO: el `case` evalua en orden, y un `.sh` no es
+        # documentacion por vivir en `docs/`. Sin esta rama, el patron `docs/*` se lo tragaba —
+        # en POSIX el `*` CRUZA LA BARRA— y `docs/scripts/deploy.sh` y
+        # `docs/scripts/verify-multiagent.sh` (el codigo que distribuye el harness a la flota;
+        # el numero NO se escribe aqui: este mismo fichero decia 22 y `selftest.yml` decia 16 y 17.
+        # Medido 2026-09-02: 17 repos git en ~/Sites, 13 con caller-stub. Una cifra en un
+        # comentario envejece sola -- el que la necesite la cuenta)
+        # contaban como documentacion: un push que solo los tocara pasaba SIN SAST.
+        # Lo reporto `coffee_framework_prod` en FEEDBACK-2026-08-18 y estuvo 14 dias sin atender.
+        #
+        # ALCANCE HONESTO del hueco, y hay que leerlo entero antes de citarlo:
+        #
+        # 1. Era de SAST, NO de secretos. `secrets` y `dep-audit` corren SIEMPRE en las tres
+        #    recetas -- verificado extrayendo cada step con su `if:` -- asi que una clave pegada
+        #    ahi se seguia viendo.
+        #
+        # 2. Y para los `.sh` el impacto real es HOY CASI NULO, medido el 2026-09-02:
+        #       semgrep --config p/security-audit sobre docs/scripts (12 ficheros .sh)
+        #         -> ficheros ESCANEADOS: 0
+        #       control positivo, mismo comando + p/php sobre app/Console
+        #         -> escaneados: 11   (la sonda funciona)
+        #    Semgrep, tal como estas recetas lo configuran, NO PARSEA shell. El paso SAST omitido
+        #    no habria analizado ni una linea de esos scripts.
+        #
+        #    Decir "pasaban sin SAST" es literalmente cierto y operativamente vacio para `.sh`.
+        #    Donde SI habia impacto: los `.py/.php/.js/.yml` bajo `docs/` (esos si se escanean) y
+        #    el paso de TESTS de la receta de node, que tambien se saltaba.
+        #
+        #    La clasificacion se arregla IGUAL, y a proposito: la regla no debe depender de que
+        #    ruleset tenga semgrep hoy. Si manana anaden reglas de bash, esto ya esta bien.
+        #    · depende-de: que el ruleset de semgrep siga sin reglas para shell
+        #
+        # 3. El ahorro NO se apaga. Medido sobre 3.694 commits reales de 17 repos en 180 dias:
+        #       saltos "solo docs" con el case VIEJO   1298
+        #       con el case NUEVO                      1292   -> se conserva el 99,54 %
+        #    Los 6 perdidos son todos de watson y todos VERDADEROS POSITIVOS (scripts de deploy y
+        #    una plantilla de workflow). Cero falsos positivos, cero repos afectados salvo watson.
+        #
+        # Y la mitad simetrica, que es la que hace util el filtro: un `.md`, un ADR o un PNG bajo
+        # `docs/` SIGUEN siendo documentacion. Ensanchar esto hasta suspender a los sanos seria el
+        # error contrario, y un check que suspende a los sanos se desactiva a la semana.
+        *.sh|*.bash|*.mjs|*.js|*.py|*.php|*.yml|*.yaml) NO_DOCS=$((NO_DOCS + 1)) ;;
         docs/*|*.md) ;;
         *) NO_DOCS=$((NO_DOCS + 1)) ;;
       esac

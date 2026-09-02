@@ -23,7 +23,9 @@ CI en 17 repos y necesita **su propia ronda** con el rol de seguridad, sobre el 
 que un advisory sin parche upstream deje de tener como única salida `--no-verify`, que apaga los
 nueve gates cuando el rojo era uno.
 
-`tests/audit-exceptions.test.sh` — **18 asserts** sobre **corpus real capturado**:
+`tests/audit-exceptions.test.sh` — **17 asserts** sobre **corpus real capturado**
+*(decía 18; contado ejecutando el archivo el 2026-08-12 — un documento que afirma un número sobre
+sí mismo y no lo vuelve a medir es la clase que este repo ya cazó en `CERRADOS-2026-08.md`)*:
 npm (app Expo, 12 high), composer (repo Laravel, 6 advisories), pip-audit 2.10.1 (6 vulns).
 Cableado en `selftest.yml`, job `decisiones`.
 

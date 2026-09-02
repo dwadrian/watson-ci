@@ -82,3 +82,11 @@ jobs:
       # (arreglarlos exige mover tags inmutables y eso es decisión del dueño, no de un test).
       - name: Un tag contiene las acciones que promete
         run: bash tests/tag-completo.test.sh
+
+      # Un `.sh` bajo `docs/` NO es documentacion: es codigo que se distribuye a 22 repos. El
+      # `case` decia `docs/*|*.md` y en POSIX el `*` CRUZA LA BARRA, asi que un push que solo
+      # tocara `docs/scripts/deploy.sh` pasaba SIN SAST. Reportado 2026-08-18, 14 dias sin atender.
+      # El test extrae el `case` REAL del script en vez de reimplementarlo: una copia mide su
+      # propia copia, no el fichero que corre en CI.
+      - name: Un `.sh` no es documentacion por vivir en docs/
+        run: bash tests/alcance-clasificacion.test.sh

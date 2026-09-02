@@ -19,6 +19,14 @@
 #   0  nada bloqueante tras filtrar
 #   1  quedan hallazgos bloqueantes
 #   2  ERROR: archivo de excepciones inválido, o entrada no utilizable
+#
+# FORMATO de cada línea del archivo de excepciones
+#   <ID> <YYYY-MM-DD> <razón>
+#   La RAZÓN debe llevar al menos un carácter IMPRIMIBLE ASCII (`!`..`~`). No es cosmética: una
+#   razón hecha sólo de espacios invisibles o de caracteres no-ASCII no es un rastro de auditoría,
+#   y el predicado se evalúa por BYTES en locale C para que el veredicto sea el mismo en toda
+#   plataforma. Consecuencia declarada: una razón escrita ÍNTEGRAMENTE en cirílico, japonés o sólo
+#   con emoji se rechaza. Cualquier prosa española o inglesa pasa (lleva letras ASCII).
 # ==============================================================================
 set -uo pipefail
 
@@ -60,7 +68,7 @@ leer_archivo() {
   local n; n="$(wc -l < "$ruta" | tr -d ' ')"
   [ "$n" -le 200 ] || die "$ruta tiene $n líneas (máx 200)."
 
-  local ln=0 id fecha resto epoch acc=""
+  local ln=0 id fecha resto epoch acc="" nf razon_util
   # `|| [ -n "$id" ]`: sin esto se pierde la última línea si el archivo no acaba en \n
   # (medido: 2 líneas sin newline final => `while read` cuenta 1). La dirección sería
   # fail-closed, pero --validate diría "válido" y el push bloquearía sin nombrar nada.
@@ -74,11 +82,52 @@ leer_archivo() {
       '<<<<<<<'*|'======='*|'>>>>>>>'*)
         die "$ruta:$ln — marcador de conflicto de merge sin resolver." ;;
     esac
-    id="$(printf '%s' "$linea" | awk '{print $1}')"
-    fecha="$(printf '%s' "$linea" | awk '{print $2}')"
-    resto="$(printf '%s' "$linea" | cut -d' ' -f3-)"
-    [ -n "$id" ] && [ -n "$fecha" ] && [ -n "$resto" ] \
-      || die "$ruta:$ln — se esperan 3 campos: <ID> <YYYY-MM-DD> <razón>."
+    # UN SOLO PARSER para la misma línea. Hasta el 2026-09-02 había DOS nociones de separador
+    # sobre el mismo texto: `awk` corta por CUALQUIER blanco y `cut -d' '` solo por espacio.
+    # Consecuencia medida por un revisor adversarial de shell, reproducida en bash 3.2 y 5.2:
+    #
+    #   printf 'GHSA-xxx\t2026-10-02\n'    ->  ✓ válido      ← SIN razón (tabulador)
+    #   printf '  GHSA-xxx 2026-10-02\n'   ->  ✓ válido      ← SIN razón (sangría)
+    #   printf 'GHSA-xxx 2026-10-02\n'     ->  ⛔ 3 campos    ← control, correcto
+    #
+    # `cut -d' ' -f3-` sobre una línea SIN espacios devuelve LA LÍNEA ENTERA, así que `resto`
+    # nunca salía vacío y la comprobación de 3 campos pasaba. Y sangrar una línea en un fichero
+    # de configuración no es exótico: es lo que hace cualquiera.
+    #
+    # POR QUÉ ES ALTA y no cosmética: la razón escrita es EL RASTRO DE AUDITORÍA del mecanismo
+    # entero — es lo único que explica por qué un HIGH está exento. Sin ella queda una exención
+    # que se aplica de verdad y no dice por qué.
+    #
+    # Es "arregla el BLOQUE, no el consumidor": se cuenta con el MISMO parser que extrae.
+    nf="$(printf '%s' "$linea" | LC_ALL=C awk '{print NF}')"
+    id="$(printf '%s' "$linea" | LC_ALL=C awk '{print $1}')"
+    fecha="$(printf '%s' "$linea" | LC_ALL=C awk '{print $2}')"
+    resto="$(printf '%s' "$linea" | LC_ALL=C awk '{$1=""; $2=""; sub(/^[[:space:]]+/, ""); print}')"
+    # `[ -n "$resto" ]` NO es portable como predicado de validez, y el gate va a 17 repos.
+    # Medido 2026-09-02 en tres plataformas con la MISMA linea, y salen TRES veredictos:
+    #
+    #   razon = solo U+00A0 (espacio duro)   macOS RECHAZA · alpine acepta  · ubuntu acepta
+    #   razon = solo U+2003 (em space)       macOS acepta   · alpine RECHAZA · ubuntu acepta
+    #
+    # Causa: las dos mitades usan definiciones distintas de "blanco". El separador de campos de
+    # awk da NF=3 en las tres (el NBSP nunca separa), pero el `[[:space:]]` de `sub()` SI varia:
+    # BSD/UTF-8 lo borra y busybox/mawk no. `nf` es la mitad portable; `resto` es la variable.
+    # Y la direccion era la mala: el RUNNER es el permisivo, justo en el campo que ES el rastro
+    # de auditoria. La suite estaba 29/29 verde en las tres, asi que nada de esto se veia.
+    #
+    # El arreglo no es elegir un awk: es no dejarle la decision. Se exige explicitamente al menos
+    # un caracter IMPRIMIBLE ASCII, evaluado por bytes en locale C — mismo veredicto en todas
+    # partes. Mas estricto que antes, que es la direccion correcta para una razon escrita a mano.
+    # ⚠️ El `LC_ALL=C` de abajo estaba SOLO aqui, y `tr` no era el problema: da lo mismo en las
+    # tres plataformas. Los cuatro `awk` de arriba corrian con el locale del entorno, y BSD awk
+    # bajo en_US.UTF-8 revienta con bytes UTF-8 invalidos. Quedaba 1 divergencia residual sobre 28
+    # lineas —una razon con bytes invalidos SEGUIDOS de texto ASCII legitimo: macOS rechazaba, el
+    # runner aceptaba— y ademas el `awk: towc: multibyte conversion failure` salia por STDERR, que
+    # es el canal del reporte de excepciones. Cuatro lineas de tripas encima de un diagnostico que
+    # encima mentia (hablaba de espacios invisibles con la razon llena de texto legible).
+    razon_util="$(printf '%s' "$resto" | LC_ALL=C tr -dc '!-~')"
+    [ "$nf" -ge 3 ] 2>/dev/null && [ -n "$id" ] && [ -n "$fecha" ] && [ -n "$razon_util" ] \
+      || die "$ruta:$ln — se esperan 3 campos: <ID> <YYYY-MM-DD> <razón>, y la razón debe llevar al menos un carácter imprimible ASCII (una razón hecha solo de espacios invisibles no es un rastro de auditoría)."
     # Charset del ID. Sin esto, `GHSA-*` se cuela y la comparación idiomática de bash
     # (`[[ $x == $exc ]]`, RHS sin comillas) lo convierte en comodín. Medido: matchea.
     [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
@@ -143,6 +192,17 @@ esac
 
 EP_JSON="$(printf '%s' "$VALIDAS" | awk -F'\t' 'NF{printf "{\"id\":\"%s\",\"e\":%s}\n",$1,$2}' | jq -s . 2>/dev/null || echo '[]')"
 
+# ── Vigencia: UN SOLO predicado, y por que ──────────────────────────────────
+# Estaba escrito DOS veces —el `select(.e >= $hoy)` de jq que DECIDE quien exime, y un
+# `[ $epoch -lt $HOY_EPOCH ]` mas abajo que INFORMA—. Coincidian, pero eran dos bloques:
+# mutar uno dejaba el otro intacto y la suite en verde (medido 2026-09-02). Peor que un
+# hueco de test: con `-le`, el filtro EXIME una excepcion mientras el mensaje dice
+# "VENCIDA, vuelve a bloquear". Es «arregla el BLOQUE, no el consumidor» y su corolario
+# «el reporte no depende del RESULTADO». Se calcula aqui y lo consumen los dos.
+VIV_JSON="$(printf '%s' "$EP_JSON" | jq -c --argjson hoy "$HOY_EPOCH" \
+  '[.[] | select(.e >= $hoy) | .id]')" || die "no pude calcular las exenciones vigentes."
+VIVOS="$(printf '%s' "$VIV_JSON" | jq -r '.[]')" || die "no pude enumerar las exenciones vigentes."
+
 # ── El filtro ────────────────────────────────────────────────────────────────
 # LA REGLA, y es la que dos versiones de la spec no supieron fijar:
 # npm DERIVA la severidad de una entrada de su `via`. Si parte del `via` queda exento,
@@ -153,7 +213,7 @@ EP_JSON="$(printf '%s' "$VALIDAS" | awk -F'\t' 'NF{printf "{\"id\":\"%s\",\"e\":
 # El grafo TIENE CICLOS (metro -> metro-config -> metro), así que se itera a punto fijo
 # N veces (N = nº de paquetes), que es cota suficiente para alcanzabilidad.
 SALIDA="$(printf '%s' "$ENTRADA" | jq \
-  --argjson ep "$EP_JSON" --argjson hoy "$HOY_EPOCH" --arg umbral "$UMBRAL" --arg eco "$ECO" '
+  --argjson ep "$EP_JSON" --argjson vivid "$VIV_JSON" --arg umbral "$UMBRAL" --arg eco "$ECO" '
   # `medium` es el vocabulario de composer; `moderate` el de npm. Medido 2026-08-12: sin
   # `medium` en la tabla, un advisory de composer caía al `// 0` y DESAPARECÍA en silencio.
   # Fail-open del camino PHP, y lo habría enviado sin el corpus real.
@@ -162,8 +222,9 @@ SALIDA="$(printf '%s' "$ENTRADA" | jq \
   def sevnum: {"info":0,"low":1,"moderate":2,"medium":2,"high":3,"critical":4}[.] // -1;
   def sevsafe: if . == -1 then 4 else . end;
   def sevname: {"0":"info","1":"low","2":"moderate","3":"high","4":"critical"}[tostring];
-  # vigentes = exenciones cuya fecha NO ha pasado (>= hoy: vale hasta el final de su día)
-  ([$ep[] | select(.e >= $hoy) | .id]) as $viv
+  # vigentes = las que calculo VIV_JSON arriba. NO se recalcula aqui: un segundo
+  # predicado es un segundo sitio donde equivocarse, y el mensaje deja de decir la verdad.
+  ($vivid) as $viv
   # ── composer: plano, sin grafo. El ID es `.cve` o `.advisoryId` — y medido sobre el
   # corpus real, `cve` es NULL en 4 de 6: el "fallback" es el caso MAYORITARIO. Se casa
   # contra LOS DOS, porque quien copia un id de la salida de composer ve el que ve.
@@ -227,9 +288,14 @@ while IFS="$(printf '\t')" read -r id epoch orig; do
   [ -n "$id" ] || continue
   orig="${orig:-$id}"
   f="$(jq -rn --argjson e "${epoch:-0}" '$e|strftime("%Y-%m-%d")')"
-  if [ "${epoch:-0}" -lt "$HOY_EPOCH" ]; then
+  # -F: el id es una CADENA. Sin el, `grep -qx` lo trata como REGEX y el charset de ids
+  # (:102) permite el punto, asi que `CVE-2020-2849.` casaba con `CVE-2020-28493` y el
+  # reporte decia "✓ aplicada" de una exencion VENCIDA. jq compara con index() —exacto—,
+  # asi que era la misma divergencia decisor/reportero que este bloque existe para cerrar,
+  # reintroducida por el propio arreglo. Medido por el gatekeeper 2026-09-02 en BSD y GNU.
+  if ! printf '%s\n' "$VIVOS" | grep -qxF -- "$id"; then
     err "  ⏰ excepción VENCIDA: $orig (venció $f) — vuelve a bloquear"
-  elif printf '%s\n' "$IDS_PRESENTES" | grep -qx -- "$id"; then
+  elif printf '%s\n' "$IDS_PRESENTES" | grep -qxF -- "$id"; then
     err "  ✓ excepción aplicada: $orig (revisar antes de $f)"
   else
     err "  🧹 excepción HUÉRFANA: $orig ($f) no casa con ningún hallazgo — ¿ya hay parche? bórrala"
@@ -238,7 +304,40 @@ done <<EOF
 $VALIDAS
 EOF
 
+# ── Entrega y veredicto ──────────────────────────────────────────────────────
+# Las dos guardas de abajo cierran hallazgos de un revisor adversarial de shell (2026-09-02),
+# los dos reproducidos en bash 3.2 y en bash 5.2:
+#
+# F4 · el contrato de la cabecera dice `2 = ERROR` y aquí se salía **1**. Si `.bloqueantes` no
+#      es numérico, `[ "$BLOQ" -eq 0 ]` NO compara: FALLA, y el `||` disparaba el `exit 1`.
+#      Salida medida: `[: null: integer expression expected` y luego
+#      `⛔ quedan null hallazgo(s)`. La dirección es fail-closed, así que no era un agujero —
+#      pero es la inversión que la propia cabecera prohíbe: **«murió» no puede leerse como
+#      «bloqueó»**. El plan escribió `num_o_muere` para esta clase exacta y la declaró
+#      obligatoria «en los tres scripts» — los tres NUEVOS. Este, que es el que la Task 1
+#      modifica y donde el defecto estaba VIVO, no la recibía.
+#
+# F3 · fail-open en la ENTREGA. El `jq` que escribe el JSON filtrado no comprobaba su rc, y la
+#      línea siguiente salía 0. Medido con el descriptor cerrado:
+#         … --filter both.txt npm < fixture >&-   →  rc=0 y CERO BYTES de JSON
+#         stderr: jq: error: writing output failed: Bad file descriptor
+#      El consumidor recibe «nada bloqueante» con la salida vacía. Es la firma que esta flota
+#      ya tiene escrita: **el que decide y el que informa tienen que ser el mismo valor** —
+#      aquí el que informa fallaba y el que decide no lo miraba. Disparadores reales: disco
+#      lleno en el runner, un `tee` a ruta no escribible, un descriptor cerrado (`>&-`).
+#      MEDIDO y NO cubierto: `| head` con esta salida (~5 KB) NO dispara — cabe entera en el
+#      buffer de pipe (64 KB), asi que jq nunca ve EPIPE y no hay error que capturar. Se
+#      nombra el limite en vez de dejar el disparador listado como si estuviera cubierto.
 BLOQ="$(printf '%s' "$SALIDA" | jq -r '.bloqueantes')"
-printf '%s' "$SALIDA" | jq 'del(.bloqueantes)'
+case "$BLOQ" in
+  ''|*[!0-9]*) err "  ⛔ ERROR INTERNO: '.bloqueantes' no es un número ('$BLOQ')."
+               err "     Esto es un fallo del filtro, NO un veredicto sobre tus dependencias."
+               exit 2 ;;
+esac
+printf '%s' "$SALIDA" | jq 'del(.bloqueantes)' \
+  || { err "  ⛔ ERROR: no se pudo ENTREGAR el JSON filtrado (¿disco lleno, pipe cerrado?)."
+       err "     El veredicto era '$BLOQ bloqueante(s)', pero la salida no llegó completa."
+       err "     Un exit 0 aquí se leería como 'nada bloqueante' con cero bytes entregados."
+       exit 2; }
 [ "$BLOQ" -eq 0 ] || { err "  ⛔ quedan $BLOQ hallazgo(s) >= $UMBRAL tras aplicar las excepciones"; exit 1; }
 exit 0
