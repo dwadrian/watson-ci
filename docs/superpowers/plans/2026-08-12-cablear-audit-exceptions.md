@@ -53,7 +53,8 @@ Copiadas literales de la spec — aplican a **todas** las tareas:
 Hoy el filtro ya reporta por excepción a stderr (`✓ aplicada` / `⏰ VENCIDA` / `🧹 HUÉRFANA`), pero sin formato de anotación y sin días restantes. En la pestaña de checks esas líneas se pierden dentro del log del paso.
 
 **Files:**
-- Modify: `tools/audit-exceptions.sh:226-238` (el bucle de reporte)
+- Modify: `tools/audit-exceptions.sh` (el bucle de reporte: `while IFS=...read -r id epoch orig`)
+  — se cita por su ancla y no por linea: la unificacion del predicado de vigencia desplazo el bloque 30 lineas
 - Test: `tests/audit-exceptions.test.sh` (añadir al final, antes del resumen)
 
 **Interfaces:**
@@ -152,7 +153,9 @@ EOF
 - [ ] **Step 4: Correr y verlos pasar**
 
 Run: `bash tests/audit-exceptions.test.sh`
-Expected: `audit-exceptions: TODO VERDE`, con los 5 asserts nuevos incluidos (23 en total).
+Expected: `audit-exceptions: TODO VERDE`, con los 19 asserts nuevos incluidos (36 en total)
+  — 6 por C3 y 6 mas tras el gate: N-1 (id como cadena) x2, N-2 (una viva se reporta viva),
+    N-3 (2 campos con tab y con sangria) x2 y N-4 (salida cerrada -> rc=2).
 
 - [ ] **Step 5: Commit**
 
