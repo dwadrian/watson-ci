@@ -17,6 +17,12 @@ name: verify-node (reusable)
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: >-
+          JSON del runs-on del job (p.ej. '["self-hosted","fabrica"]' para el runner del VPS de la
+          Fábrica). Default '"ubuntu-latest"' = comportamiento idéntico al de siempre.
+        type: string
+        default: '"ubuntu-latest"'
       gated-branches:
         description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
         type: string
@@ -53,7 +59,7 @@ permissions:
 jobs:
   verify:
     name: 🔒 secrets + SAST + deps (Node)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 15
     steps:
       - name: Checkout
