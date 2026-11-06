@@ -22,6 +22,15 @@ name: verify-python (reusable)
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: >-
+          runs-on del job, en JSON (fabrica#2425). Runner propio: '["self-hosted","makro-web"]';
+          lo normal es pasar la variable de repo vars.RUNS_ON. Default '"ubuntu-latest"' = el runner de
+          siempre. Vacio cuenta como default: un `vars.RUNS_ON` sin definir llega como '' (el
+          default de un input NO se aplica a un valor pasado vacio). Requisitos: README § Runner propio.
+        type: string
+        required: false
+        default: '"ubuntu-latest"'
       gated-branches:
         description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
         type: string
@@ -62,9 +71,38 @@ permissions:
 jobs:
   verify:
     name: 🔒 secrets + SAST + deps (Python)
-    runs-on: ubuntu-latest
+    # `|| '"ubuntu-latest"'`: ver la descripcion del input — sin el, `vars.RUNS_ON` vacio rompe el job.
+    runs-on: ${{ fromJSON(inputs.runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 15
     steps:
+      # ── Requisitos del runner (fabrica#2425) ─────────────────────────────────────────────
+      # Un runner propio es una imagen mas minima que ubuntu-latest. Lo que se puede fijar con
+      # version y checksum lo instala la receta (setup-python, jq); lo que NO (git y las
+      # coreutils) se comprueba AQUI, primero, y falla con la lista de lo que falta. Sin git,
+      # actions/checkout cae a descargar por API SIN `.git`: el merge-base sale vacio y el SAST
+      # degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a proposito: si falta
+      # bash, el paso tiene que poder decirlo.
+      - name: "🧰 Requisitos del runner"
+        shell: sh
+        run: |
+          falta=""
+          for t in bash git grep sed cat wc tr tar gzip uname find sort timeout; do
+            command -v "$t" >/dev/null 2>&1 || falta="$falta $t"
+          done
+          if [ -n "$falta" ]; then
+            echo "::error::Este runner no trae:$falta — ver README § Runner propio."
+            exit 1
+          fi
+          # actions/checkout solo usa git (y deja `.git`) con git >= 2.18.
+          v=$(git --version | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+          # shellcheck disable=SC2086 # partir "2 43" en $1 $2 es lo que se busca
+          set -- $v
+          if [ -z "$v" ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -lt 18 ]; }; then
+            echo "::error::git >= 2.18 requerido (hay: $(git --version)) — sin el, checkout baja sin historia."
+            exit 1
+          fi
+          echo "runner OK: ${RUNNER_ENVIRONMENT:-?} $(uname -m) · $(git --version)"
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -80,6 +118,53 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python-version }}
+
+      # jq lo usa el gate de pip-audit para DECIDIR (JSON valido, conteo de vulns). ubuntu-latest lo
+      # trae de serie; un runner propio no tiene por que (fabrica#2425). Se fija aqui: version +
+      # sha256 del release oficial (jqlang/jq, sha256sum.txt), por arquitectura. 1.8.2 y no el 1.7.1
+      # de ubuntu-24.04: el binario upstream 1.7.1 NO lleva los arreglos de CVE-2024-23337,
+      # CVE-2024-53427 y CVE-2025-48060 (upstream 1.8.0). El conteo de vulns de abajo NO tiene
+      # fixture propio: lo ejercita el job python de selftest sobre tools/requirements-*.txt
+      # (2026-11-06: 18 y 25 vulns, iguales con 1.7.1 y con 1.8.2). Se descarga con el python
+      # de setup-python para no exigir curl al runner.
+      - name: Instalar jq 1.8.2 (sha256 fijado)
+        env:
+          JQ_VERSION: jq-1.8.2
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)        arch=amd64; sha=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f ;;
+            aarch64|arm64) arch=arm64; sha=8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 ;;
+            *) echo "::error::arquitectura $(uname -m) sin jq fijado — anadir su sha256 aqui."; exit 1 ;;
+          esac
+          dir="$RUNNER_TEMP/watson-ci-bin"
+          mkdir -p "$dir"
+          python -I - "$JQ_VERSION" "$arch" "$sha" "$dir/jq" <<'PY'
+          import hashlib, http.client, os, sys, time, urllib.error, urllib.request
+          ver, arch, sha, dest = sys.argv[1:]
+          url = f"https://github.com/jqlang/jq/releases/download/{ver}/jq-linux-{arch}"
+          # 3 intentos SOLO ante fallo de red (incluido un corte a mitad: IncompleteRead es
+          # HTTPException, no OSError). Un checksum que no coincide no se reintenta.
+          for intento in (1, 2, 3):
+              try:
+                  data = urllib.request.urlopen(url, timeout=60).read()
+                  break
+              except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
+                  if intento == 3:
+                      sys.exit(f"::error::no pude descargar {url}: {e}")
+                  time.sleep(5 * intento)
+          got = hashlib.sha256(data).hexdigest()
+          if got != sha:
+              sys.exit(f"::error::sha256 de {url} NO coincide: {got} != {sha}")
+          # Atomico: temporal en el mismo directorio + os.replace. Nunca queda un jq a medias.
+          tmp = f"{dest}.{os.getpid()}.tmp"
+          with open(tmp, "wb") as f:
+              f.write(data)
+          os.chmod(tmp, 0o755)
+          os.replace(tmp, dest)
+          PY
+          echo "$dir" >> "$GITHUB_PATH"
+          "$dir/jq" --version
 
       # DOS VENVS EXPLICITOS, no pipx (v3, 2026-08-03).
       #

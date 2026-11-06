@@ -17,6 +17,15 @@ name: verify-node (reusable)
 on:
   workflow_call:
     inputs:
+      runs-on:
+        description: >-
+          runs-on del job, en JSON (fabrica#2425). Runner propio: '["self-hosted","makro-web"]';
+          lo normal es pasar la variable de repo vars.RUNS_ON. Default '"ubuntu-latest"' = el runner de
+          siempre. Vacio cuenta como default: un `vars.RUNS_ON` sin definir llega como '' (el
+          default de un input NO se aplica a un valor pasado vacio). Requisitos: README § Runner propio.
+        type: string
+        required: false
+        default: '"ubuntu-latest"'
       gated-branches:
         description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
         type: string
@@ -53,9 +62,38 @@ permissions:
 jobs:
   verify:
     name: 🔒 secrets + SAST + deps (Node)
-    runs-on: ubuntu-latest
+    # `|| '"ubuntu-latest"'`: ver la descripcion del input — sin el, `vars.RUNS_ON` vacio rompe el job.
+    runs-on: ${{ fromJSON(inputs.runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 15
     steps:
+      # ── Requisitos del runner (fabrica#2425) ─────────────────────────────────────────────
+      # Un runner propio es una imagen mas minima que ubuntu-latest. Lo que se puede fijar con
+      # version y checksum lo instala la receta (setup-python/setup-node); lo que NO (git y las
+      # coreutils) se comprueba AQUI, primero, y falla con la lista de lo que falta. Sin git,
+      # actions/checkout cae a descargar por API SIN `.git`: el merge-base sale vacio y el SAST
+      # degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a proposito: si falta
+      # bash, el paso tiene que poder decirlo.
+      - name: "🧰 Requisitos del runner"
+        shell: sh
+        run: |
+          falta=""
+          for t in bash git grep sed cat wc tr tar gzip uname; do
+            command -v "$t" >/dev/null 2>&1 || falta="$falta $t"
+          done
+          if [ -n "$falta" ]; then
+            echo "::error::Este runner no trae:$falta — ver README § Runner propio."
+            exit 1
+          fi
+          # actions/checkout solo usa git (y deja `.git`) con git >= 2.18.
+          v=$(git --version | sed -n 's/^git version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+          # shellcheck disable=SC2086 # partir "2 43" en $1 $2 es lo que se busca
+          set -- $v
+          if [ -z "$v" ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -lt 18 ]; }; then
+            echo "::error::git >= 2.18 requerido (hay: $(git --version)) — sin el, checkout baja sin historia."
+            exit 1
+          fi
+          echo "runner OK: ${RUNNER_ENVIRONMENT:-?} $(uname -m) · $(git --version)"
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
