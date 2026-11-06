@@ -56,6 +56,62 @@ jobs:
       #   ya puede ejecutar lo que quiera), pero interpolar un título de PR sí lo convierte en RCE.
 ```
 
+## Runner propio (input `runs-on`)
+
+Todo job de las tres recetas elige su runner con el input `runs-on` (JSON). Sin pasarlo, corre en
+`ubuntu-latest` como siempre. Con runners propios (fabrica#2425: al agotarse el tope de gasto de
+Actions, el job `seguridad` de makro_web no podía correr y `ci-ok` quedaba en rojo):
+
+```yaml
+jobs:
+  seguridad:
+    uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@<sha-40>
+    with:
+      runs-on: ${{ vars.RUNS_ON }}     # p. ej. ["self-hosted","makro-web"]
+      tooling-ref: <sha-40>            # el MISMO sha que el `uses:`
+```
+
+Si `vars.RUNS_ON` no está definida llega `''`, y la receta lo trata como `"ubuntu-latest"`: el
+default de un input **no** se aplica a un valor pasado vacío, así que sin ese fallback `fromJSON('')`
+rompería el job.
+
+El valor es **JSON**, no una etiqueta suelta: `'"ubuntu-latest"'` o `'["self-hosted","makro-web"]'`.
+Escribir `runs-on: ubuntu-latest` (sin las comillas de JSON) hace fallar el job al arrancar; falla
+con ruido, no en silencio, pero es la trampa obvia porque el input se llama igual que la clave.
+
+### Qué tiene que traer el runner
+
+El primer paso de cada job (`🧰 Requisitos del runner`) comprueba las filas marcadas **(c)** y falla
+con la lista de lo que falte, en vez de dejar que un paso posterior se rompa (o, peor, que se degrade
+en silencio). El resto son requisitos **no comprobados** por la receta: si faltan, falla el paso que
+los usa.
+
+| Necesita | node | python | php | Por qué no lo instala la receta |
+|---|:---:|:---:|:---:|---|
+| **(c)** `git` ≥ 2.18 | ✅ | ✅ | ✅ | sin él `actions/checkout` baja por API **sin `.git`**: el merge-base sale vacío y el SAST pasaría a advisory |
+| **(c)** `sh`, `bash`, `grep`, `sed`, `cat`, `wc`, `tr`, `tar`, `gzip`, `uname` | ✅ | ✅ | ✅ | sistema base; `tar`/`gzip` los usan `setup-python`/`setup-node` para desempaquetar |
+| **(c)** `find`, `sort`, `timeout` | — | ✅ | — | sistema base (gate de pip-audit) |
+| **(c)** `curl` + **`sudo` sin contraseña** (o root con sudo permitido) | — | — | ✅ | `shivammathur/setup-php` usa `sudo` para todo; sin él se queda esperando un candado hasta el timeout (medido en ci-makro, 2026-09-26). En self-hosted instala PHP por apt (Ubuntu/Debian), cada run: cuenta minutos contra el `timeout-minutes: 15`. `sudo -n true` se comprueba siempre (en ubuntu-latest viene de serie) |
+| `ca-certificates` | ✅ | ✅ | ✅ | TLS de git, pip y la descarga de jq |
+| Linux x86_64 o arm64, **versión de Ubuntu de las que tiene GitHub** (runner-images), `RUNNER_TOOL_CACHE`/`AGENT_TOOLSDIRECTORY` escribible | ✅ | ✅ | ✅ | `setup-python`/`setup-node` bajan builds hechos para esas imágenes; en otra distro pueden no funcionar (doc de setup-python, «self-hosted runner») |
+| Salida HTTPS a github.com, `api.github.com`, `raw.githubusercontent.com` (manifiestos de setup-python/setup-node), `objects.githubusercontent.com` y `release-assets.githubusercontent.com` (redirecciones de releases), pypi.org y `files.pythonhosted.org`, semgrep.dev; registry.npmjs.org y `nodejs.org` (node); packagist.org, los mirrors de apt y `ppa.launchpadcontent.net` (php) | ✅ | ✅ | ✅ | descargas fijadas, rulesets y paquetes |
+| **Runner efímero** (un contenedor por job, `--ephemeral`) | ✅ | ✅ | ✅ | la receta usa rutas fijas (`/tmp/venv-*`) y hace `pip install` en el Python del tool cache. En un runner persistente compartido, un job anterior podría dejar plantado un paquete que `pip` dé por «ya instalado». No se comprueba |
+
+Lo que **sí** instala la receta, fijado: Python (`setup-python`), Node (`setup-node`), Semgrep y
+pip-audit (`--require-hashes`), y **jq 1.8.2** (sha256 por arquitectura, 3 reintentos ante fallo de
+red). jq era la dependencia oculta: ubuntu-latest lo trae de serie y los gates de composer audit y
+pip-audit deciden con él. Es 1.8.2 y no el 1.7.1 de ubuntu-24.04 porque el binario upstream 1.7.1 no
+lleva los arreglos de CVE-2024-23337, CVE-2024-53427 y CVE-2025-48060 (ni los posteriores hasta
+1.8.2; el paquete de Ubuntu puede llevarlos por backport). `selftest` repite con ese pin las
+expresiones de decisión de composer audit; el conteo de pip-audit lo ejercita el job python.
+
+Docker y gitleaks no hacen falta: los secretos los escanea Semgrep.
+
+> **Seguridad del runner.** `runs-on` decide en qué máquina corre el gate, con el fuente del
+> repo en disco. Un runner propio **no** debe ejecutar `pull_request` de forks en repos públicos
+> (cualquiera podría correr código en él), y `vars.RUNS_ON` debe apuntar solo a runners del
+> mismo dueño que el repo.
+
 ## Garantías de seguridad / costo (por qué no se dispara solo ni cobra de más)
 
 - **`timeout-minutes: 15`** por job — tope duro, nada se va de largo.
