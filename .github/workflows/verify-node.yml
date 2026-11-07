@@ -67,20 +67,49 @@ jobs:
     timeout-minutes: 15
     steps:
       # ── Requisitos del runner (fabrica#2425) ─────────────────────────────────────────────
-      # Un runner propio es una imagen mas minima que ubuntu-latest. Lo que se puede fijar con
-      # version y checksum lo instala la receta (setup-python/setup-node); lo que NO (git y las
-      # coreutils) se comprueba AQUI, primero, y falla con la lista de lo que falta. Sin git,
-      # actions/checkout cae a descargar por API SIN `.git`: el merge-base sale vacio y el SAST
-      # degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a proposito: si falta
-      # bash, el paso tiene que poder decirlo.
+      # Decide el MODO y comprueba, primero, lo que la receta no instala; falla con la lista de lo
+      # que falta. Sin git, actions/checkout cae a descargar por API SIN `.git`: el merge-base sale
+      # vacio y el SAST degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a
+      # proposito: si falta bash, el paso tiene que poder decirlo.
+      #
+      # MODO (salida `alojado`): `true` SOLO en un runner alojado de GitHub con el runs-on por
+      # defecto. Ahi setup-python/setup-node toman las versiones del tool cache de la imagen y nada
+      # cambia. En cualquier otro caso (runner propio) la receta FALLA CERRADO: no llama a
+      # setup-python ni a setup-node, porque sin la version en el tool cache descargan y ejecutan
+      # codigo sin checksum (setup.sh de Python, `pip install --upgrade pip` sin version ni hashes,
+      # el tarball de Node). La imagen tiene que traer python3 y node en la version pedida; si no,
+      # rojo aqui remitiendo a README § Runner propio.
       - name: "🧰 Requisitos del runner"
+        id: runner
         shell: sh
+        env:
+          RUNS_ON_INPUT: ${{ inputs.runs-on }}
+          RUNNER_ENV: ${{ runner.environment }}
+          PY_VERSION: '3.12'
+          NODE_VERSION: ${{ inputs.node-version }}
         run: |
           falta=""
           for t in bash git grep sed cat wc tr tar gzip uname; do
             command -v "$t" >/dev/null 2>&1 || falta="$falta $t"
           done
+          # version_ok HAY PEDIDA: HAY (X.Y.Z) es PEDIDA o empieza por "PEDIDA." (`.x` final ignorado).
+          version_ok() { p=${2%.x}; [ -n "$1" ] && [ -n "$p" ] && case "$1." in "$p".*) true ;; *) false ;; esac; }
+          alojado=false
+          if [ "$RUNNER_ENV" = "github-hosted" ]; then
+            case "$RUNS_ON_INPUT" in ''|'"ubuntu-latest"') alojado=true ;; esac
+          fi
+          if [ "$alojado" != true ]; then
+            # `|| x=""` en cada captura: Actions corre `shell: sh` como `sh -e`, y una asignacion
+            # que falla cortaria el paso ANTES del mensaje que remite al README.
+            py=$(python3 -I -c 'import sys, venv, ensurepip; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null) || py=""
+            version_ok "$py" "$PY_VERSION" || falta="$falta python3-$PY_VERSION-con-venv(hay:${py:-nada})"
+            nv=$(node --version 2>/dev/null | sed 's/^v//') || nv=""
+            version_ok "$nv" "${NODE_VERSION#v}" || falta="$falta node-$NODE_VERSION(hay:${nv:-nada})"
+            npmv=$(npm --version 2>/dev/null) || npmv=""
+            [ -n "$npmv" ] || falta="$falta npm"
+          fi
           if [ -n "$falta" ]; then
+            [ "$alojado" = true ] || echo "Modo RUNNER PROPIO (runner.environment=${RUNNER_ENV:-?}; un runs-on distinto del default tambien cuenta): la receta no descarga interpretes, los trae la imagen."
             echo "::error::Este runner no trae:$falta — ver README § Runner propio."
             exit 1
           fi
@@ -92,7 +121,8 @@ jobs:
             echo "::error::git >= 2.18 requerido (hay: $(git --version)) — sin el, checkout baja sin historia."
             exit 1
           fi
-          echo "runner OK: ${RUNNER_ENVIRONMENT:-?} $(uname -m) · $(git --version)"
+          echo "alojado=$alojado" >> "$GITHUB_OUTPUT"
+          echo "runner OK: ${RUNNER_ENV:-?} alojado=$alojado $(uname -m) · $(git --version)"
 
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -105,10 +135,26 @@ jobs:
           fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
           filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
 
+      # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi 3.12 esta en el tool cache.
       - name: Setup Python (para Semgrep)
+        if: steps.runner.outputs.alojado == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
+
+      # Runner propio: el python3 de la imagen (version ya comprobada), en un venv para tener
+      # `python`/`pip` en PATH y no tocar el Python del sistema (PEP 668). El pip es el que trae
+      # ensurepip con ese mismo Python: no se descarga ni se actualiza (nada de --upgrade).
+      - name: Python del runner (runner propio, sin descargas)
+        if: steps.runner.outputs.alojado != 'true'
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/watson-ci-python"
+          # -I: sin -I, `python -m X` busca X primero en el cwd (el repo del caller, ya en disco).
+          python3 -I -m venv --clear "$venv" || { echo "::error::python3 no pudo crear el venv (Debian/Ubuntu: falta python3.X-venv) — ver README § Runner propio."; exit 1; }
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          "$venv/bin/python" --version
+          "$venv/bin/python" -I -m pip --version
 
       # ── El tooling pineado vive en watson-ci, NO en el repo que llama ────────────────
       # Un workflow reutilizable ejecuta sus `run:` sobre el checkout del CALLER, asi que
@@ -236,7 +282,10 @@ jobs:
         if: always() && steps.alcance.outputs.solo_docs != 'true'
         run: semgrep scan --config "p/security-audit" --config "p/javascript" --config "p/typescript" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
+      # Solo en runner ALOJADO. En un runner propio se usa el node/npm de la imagen, cuya version
+      # ya comprobo «Requisitos del runner» (setup-node lo descargaria sin verificar).
       - name: Setup Node
+        if: steps.runner.outputs.alojado == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}

@@ -19,6 +19,13 @@
 #   4. El primer paso de cada job es el de requisitos del runner (fallar rápido y con diagnóstico).
 #   5. Toda receta que usa `jq` lo instala ANTES ella misma, versión y sha256 fijados: un runner
 #      propio no lo trae de serie como ubuntu-latest.
+#   6. FALLA CERRADO en runner propio (ronda 2, P1/P2 de Codex): setup-python/setup-node/setup-php
+#      solo con `if: steps.runner.outputs.alojado == 'true'`. Sin el intérprete ya instalado,
+#      descargan y ejecutan código sin checksum (install.sh de releases/latest, setup.sh,
+#      `pip install --upgrade pip`). En un runner propio, Python sale de un venv del python3 de la
+#      imagen con el pip de ensurepip, sin actualizarlo. Y la CONDUCTA del paso de requisitos se
+#      ejecuta de verdad (sh + stubs): alojado no exige nada a la imagen; propio exige
+#      python3/node/npm/php/composer en la versión pedida y, si falta alguno, falla remitiendo al README.
 #
 # Y LOS AUTO-MUTANTES: el checker corre sobre copias mutadas de cada receta y TIENE que dar rojo.
 # Un test que no ve fallar sus mutantes no demuestra que mire lo que dice mirar.

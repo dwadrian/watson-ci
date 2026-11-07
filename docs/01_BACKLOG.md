@@ -59,5 +59,21 @@ _Sin trabajo activo declarado. El siguiente que arranque se mueve aquí._
 
 ## Decisión del dueño
 
-_Ninguna abierta. El movimiento del alias `v2` vive en `## Bloqueado`
-porque tiene dueño y comando concretos — no falta decidir nada, falta ejecutarlo._
+- [ ] **¿Endurecer también el camino ALOJADO como el propio?** (fabrica#2425, ronda 2). En runner
+  propio, la receta ya no descarga sin verificar. En **alojado** se dejó intacto a propósito,
+  porque cambiarlo altera decisiones del gate en toda la flota. Ahí siguen tres cosas, todas
+  anteriores a #2425:
+  1. `pip-audit --no-deps -r` sin `--disable-pip` crea un venv, hace `pip install --upgrade pip`
+     sin versión e instala los requirements del caller, ejecutando el `setup.py` de cualquier
+     sdist (pip-audit 2.10.1, `_dependency_source/requirement.py:161-177`,
+     `_virtual_env.py:119-134`). Con `--disable-pip`, un requisito sin `==` pasaría a ROJO.
+  2. `composer audit` carga plugins de `vendor/composer/installed.json` (falta `--no-plugins`).
+  3. setup-python/setup-node/setup-php descargan sin checksum si la versión no está en el tool
+     cache de la imagen.
+  · origen: revisión Codex + refutación, ronda 2 de `operador/runs-on-input-20261106` (PR #3)
+- [ ] **`pylock.toml` siempre da ROJO en verify-python** (anterior a #2425, diferido aquí). Se llama
+  `audit_source "pylock.toml" --locked --strict` sin ruta de proyecto, y pip-audit 2.10.1 aborta
+  con `--locked flag can only be used with a project path` (`_cli.py:463-465`). Falla cerrado,
+  pero el camino `--locked` nunca ha funcionado. Arreglarlo (pasar `.`) cambia el veredicto en
+  alojado: por eso queda aquí y no en el PR de runners propios.
+  · origen: gatekeeper de la ronda 2, PR #3
