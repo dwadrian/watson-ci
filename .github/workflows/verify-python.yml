@@ -76,20 +76,43 @@ jobs:
     timeout-minutes: 15
     steps:
       # ── Requisitos del runner (fabrica#2425) ─────────────────────────────────────────────
-      # Un runner propio es una imagen mas minima que ubuntu-latest. Lo que se puede fijar con
-      # version y checksum lo instala la receta (setup-python, jq); lo que NO (git y las
-      # coreutils) se comprueba AQUI, primero, y falla con la lista de lo que falta. Sin git,
-      # actions/checkout cae a descargar por API SIN `.git`: el merge-base sale vacio y el SAST
-      # degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a proposito: si falta
-      # bash, el paso tiene que poder decirlo.
+      # Decide el MODO y comprueba, primero, lo que la receta no instala; falla con la lista de lo
+      # que falta. Sin git, actions/checkout cae a descargar por API SIN `.git`: el merge-base sale
+      # vacio y el SAST degrada a ADVISORY en silencio. Eso es peor que un rojo. POSIX sh a
+      # proposito: si falta bash, el paso tiene que poder decirlo.
+      #
+      # MODO (salida `alojado`): `true` SOLO en un runner alojado de GitHub con el runs-on por
+      # defecto. Ahi setup-python toma la version del tool cache de la imagen y nada cambia. En
+      # cualquier otro caso (runner propio) la receta FALLA CERRADO: no llama a setup-python, que
+      # sin la version en el tool cache descarga y ejecuta un setup.sh sin checksum y hace
+      # `pip install --upgrade pip` sin version ni hashes. La imagen tiene que traer python3 en la
+      # version pedida (con venv/ensurepip); si no, rojo aqui remitiendo a README § Runner propio.
       - name: "🧰 Requisitos del runner"
+        id: runner
         shell: sh
+        env:
+          RUNS_ON_INPUT: ${{ inputs.runs-on }}
+          RUNNER_ENV: ${{ runner.environment }}
+          PY_VERSION: ${{ inputs.python-version }}
         run: |
           falta=""
           for t in bash git grep sed cat wc tr tar gzip uname find sort timeout; do
             command -v "$t" >/dev/null 2>&1 || falta="$falta $t"
           done
+          # version_ok HAY PEDIDA: HAY (X.Y.Z) es PEDIDA o empieza por "PEDIDA." (`.x` final ignorado).
+          version_ok() { p=${2%.x}; [ -n "$1" ] && [ -n "$p" ] && case "$1." in "$p".*) true ;; *) false ;; esac; }
+          alojado=false
+          if [ "$RUNNER_ENV" = "github-hosted" ]; then
+            case "$RUNS_ON_INPUT" in ''|'"ubuntu-latest"') alojado=true ;; esac
+          fi
+          if [ "$alojado" != true ]; then
+            # `|| py=""`: Actions corre `shell: sh` como `sh -e`, y una asignacion que falla
+            # cortaria el paso ANTES del mensaje que remite al README.
+            py=$(python3 -I -c 'import sys, venv, ensurepip; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null) || py=""
+            version_ok "$py" "$PY_VERSION" || falta="$falta python3-$PY_VERSION-con-venv(hay:${py:-nada})"
+          fi
           if [ -n "$falta" ]; then
+            [ "$alojado" = true ] || echo "Modo RUNNER PROPIO (runner.environment=${RUNNER_ENV:-?}; un runs-on distinto del default tambien cuenta): la receta no descarga interpretes, los trae la imagen."
             echo "::error::Este runner no trae:$falta — ver README § Runner propio."
             exit 1
           fi
@@ -101,7 +124,8 @@ jobs:
             echo "::error::git >= 2.18 requerido (hay: $(git --version)) — sin el, checkout baja sin historia."
             exit 1
           fi
-          echo "runner OK: ${RUNNER_ENVIRONMENT:-?} $(uname -m) · $(git --version)"
+          echo "alojado=$alojado" >> "$GITHUB_OUTPUT"
+          echo "runner OK: ${RUNNER_ENV:-?} alojado=$alojado $(uname -m) · $(git --version)"
 
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -114,10 +138,26 @@ jobs:
           fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
           filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
 
+      # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi la version esta en el tool cache.
       - name: Setup Python
+        if: steps.runner.outputs.alojado == 'true'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ inputs.python-version }}
+
+      # Runner propio: el python3 de la imagen (version ya comprobada), en un venv para tener
+      # `python`/`pip` en PATH y no tocar el Python del sistema (PEP 668). El pip es el que trae
+      # ensurepip con ese mismo Python: no se descarga ni se actualiza (nada de --upgrade).
+      - name: Python del runner (runner propio, sin descargas)
+        if: steps.runner.outputs.alojado != 'true'
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/watson-ci-python"
+          # -I: sin -I, `python -m X` busca X primero en el cwd (el repo del caller, ya en disco).
+          python3 -I -m venv --clear "$venv" || { echo "::error::python3 no pudo crear el venv (Debian/Ubuntu: falta python3.X-venv) — ver README § Runner propio."; exit 1; }
+          echo "$venv/bin" >> "$GITHUB_PATH"
+          "$venv/bin/python" --version
+          "$venv/bin/python" -I -m pip --version
 
       # jq lo usa el gate de pip-audit para DECIDIR (JSON valido, conteo de vulns). ubuntu-latest lo
       # trae de serie; un runner propio no tiene por que (fabrica#2425). Se fija aqui: version +
@@ -126,7 +166,7 @@ jobs:
       # CVE-2024-53427 y CVE-2025-48060 (upstream 1.8.0). El conteo de vulns de abajo NO tiene
       # fixture propio: lo ejercita el job python de selftest sobre tools/requirements-*.txt
       # (2026-11-06: 18 y 25 vulns, iguales con 1.7.1 y con 1.8.2). Se descarga con el python
-      # de setup-python para no exigir curl al runner.
+      # del paso anterior (setup-python, o el de la imagen) para no exigir curl al runner.
       - name: Instalar jq 1.8.2 (sha256 fijado)
         env:
           JQ_VERSION: jq-1.8.2
@@ -198,9 +238,11 @@ jobs:
       - name: Instalar herramientas (pineadas por hash, aisladas)
         run: |
           set -euo pipefail
-          python -m venv /tmp/venv-semgrep
+          # --clear: en un runner reutilizado no se hereda un venv que dejara otro job.
+          # -I: sin -I, `python -m venv` cargaria un `venv/` del repo del caller (cwd).
+          python -I -m venv --clear /tmp/venv-semgrep
           /tmp/venv-semgrep/bin/pip install --quiet --require-hashes --no-deps -r .watson-ci-tooling/tools/requirements-semgrep.txt
-          python -m venv /tmp/venv-pipaudit
+          python -I -m venv --clear /tmp/venv-pipaudit
           /tmp/venv-pipaudit/bin/pip install --quiet --require-hashes --no-deps -r .watson-ci-tooling/tools/requirements-pip-audit.txt
           # Al PATH para que los pasos siguientes invoquen `semgrep` y `pip-audit` sin cambios.
           echo "/tmp/venv-semgrep/bin" >> "$GITHUB_PATH"
@@ -310,12 +352,14 @@ jobs:
         if: always() && steps.alcance.outputs.solo_docs != 'true'
         run: semgrep scan --config "p/security-audit" --config "p/python" --severity WARNING --quiet --disable-version-check --metrics=off --timeout 120 . || true
 
-      # Dep-audit con pip-audit (PyPA oficial). Gate por JSON. --no-deps/--locked auditan SIN
-      # instalar (no se ejecuta setup.py de ninguna dep). Solo fuentes TOTALMENTE PINEADAS.
+      # Dep-audit con pip-audit (PyPA oficial). Gate por JSON. --locked audita SIN instalar.
+      # Con requirements, `--no-deps` SOLO no basta para no instalar: ver --disable-pip abajo.
+      # Solo fuentes TOTALMENTE PINEADAS.
       - name: 📦 pip-audit (bloquea CUALQUIER vuln SIEMPRE)
         env:
           AUDIT_OPTIONAL: ${{ inputs.python-audit-optional }}
           IGNORE_VULN: ${{ inputs.pip-audit-ignore-vuln }}
+          ALOJADO: ${{ steps.runner.outputs.alojado }}
         run: |
           set -uo pipefail
 
@@ -409,12 +453,23 @@ jobs:
 
           # --strict: enforce nativo de "totalmente pineadas" (una entrada URL/VCS/editable sin
           # pinear => error fatal, no skip silencioso => cierra el silent-coverage-gap).
+          #
+          # --disable-pip en RUNNER PROPIO (fabrica#2425, ronda 2). OJO: `--no-deps` NO evita pip.
+          # Sin `--disable-pip`, pip-audit 2.10.1 crea un venv, hace `pip install --upgrade pip`
+          # SIN version e instala ahi los requirements del caller, ejecutando el setup.py de
+          # cualquier sdist (_dependency_source/requirement.py:161-177, _virtual_env.py:119-134).
+          # En un runner propio eso es descargar y ejecutar codigo sin verificar. Con
+          # --disable-pip audita los pins tal cual, sin instalar (un requisito sin `==` da error y
+          # el gate falla cerrado). En ALOJADO no se toca: cambiaria las decisiones del gate de
+          # toda la flota, y eso se decide aparte.
+          SIN_PIP=()
+          [ "$ALOJADO" = true ] || SIN_PIP=(--disable-pip)
           rc_total=0
           if [ "$has_pylock" = "true" ]; then
             audit_source "pylock.toml" --locked --strict || rc_total=1
           fi
           for f in "${reqfiles[@]}"; do
-            audit_source "$f" --no-deps --strict -r "$f" || rc_total=1
+            audit_source "$f" --no-deps --strict "${SIN_PIP[@]}" -r "$f" || rc_total=1
           done
 
           if [ "$rc_total" -ne 0 ]; then
