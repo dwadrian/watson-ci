@@ -136,7 +136,23 @@ jobs:
           # merge-base, cat-file y --baseline-commit, todo local.
           persist-credentials: false
           fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
-          filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
+
+      - name: Comprobar checkout completo del caller
+        shell: bash
+        run: |
+          set -euo pipefail
+          for clave in remote.origin.promisor remote.origin.partialclonefilter; do
+            if git config --get-all "$clave" >/dev/null; then
+              echo "::error::Clon parcial heredado ($clave): sin credenciales persistentes faltan blobs para el baseline. Retirar el runner y recrear su workspace con un clon completo antes de reintentar; ver issue #2537 del caller."
+              exit 1
+            else
+              rc=$?
+              if [ "$rc" -ne 1 ]; then
+                echo "::error::No se pudo comprobar $clave (git config rc=$rc); revisar el checkout antes de reintentar."
+                exit 1
+              fi
+            fi
+          done
 
       # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi la version esta en el tool cache.
       - name: Setup Python

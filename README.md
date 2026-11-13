@@ -56,6 +56,25 @@ jobs:
       #   ya puede ejecutar lo que quiera), pero interpolar un título de PR sí lo convierte en RCE.
 ```
 
+## Checkout Python completo (issue #2537 del caller)
+
+`verify-python.yml` conserva el checkout en la raíz del caller con `fetch-depth: 0`,
+pero sin `filter: blob:none`: descarga también los blobs históricos mientras checkout
+tiene autenticación temporal. `persist-credentials: false` se mantiene. Así no deja
+un promisor en el workspace compartido por los siguientes jobs del runner.
+No se mueve el código a un subdirectorio: se conservan exactamente el alcance de
+`alcance.sh`, `.semgrepignore`, los comandos de Semgrep y su baseline, la limpieza
+de `.watson-ci-tooling` y la búsqueda de lockfiles de pip-audit, sin cambiar su estrictez.
+El coste es transferir los blobs históricos, no solo el grafo de commits.
+
+Quitar el filtro no convierte un clon parcial existente en completo. La receta
+falla explícitamente si cualquiera de `remote.origin.promisor` o
+`remote.origin.partialclonefilter` está definido (incluso vacío o `false`), o si
+no puede consultar la configuración. No hace refetch ni elimina configuración.
+Para un workspace ya contaminado, retirar el runner, esperar a que no tenga jobs
+y recrear ese workspace con un clon completo antes de reintentar; no borrarlo en uso.
+La regresión local y en selftest es `python3 -I tests/checkout-completo.test.py`.
+
 ## Runner propio (input `runs-on`)
 
 Todo job de las tres recetas elige su runner con el input `runs-on` (JSON). Sin pasarlo, corre en

@@ -76,6 +76,9 @@ jobs:
       - name: Veredictos esperados sobre fixtures conocidos
         run: bash tests/expect-audit-decision.sh
 
+      - name: Checkout Python completo sin alterar el scan
+        run: python3 -I tests/checkout-completo.test.py
+
       # Excepciones de dependencias que CADUCAN. Este script decide si un advisory bloquea
       # en los 17 repos, así que su suite corre ANTES de que se pueda publicar un tag.
       # Los fixtures son capturas REALES (npm de una app Expo, composer de un repo Laravel,
