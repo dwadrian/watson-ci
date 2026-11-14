@@ -5,7 +5,7 @@ from pathlib import Path
 
 RAIZ = Path(sys.argv[1])
 RECETAS = ["verify-node.yml", "verify-python.yml", "verify-php.yml"]
-RUNS_ON_ESPERADO = """${{ fromJSON(inputs.runs-on || '"ubuntu-latest"') }}"""
+RUNS_ON_ESPERADO = "${{ fromJSON(inputs.runs-on).group == 'ci-comun' && startsWith(toJSON(fromJSON(inputs.runs-on).labels), '[') && contains(fromJSON(inputs.runs-on).labels, 'self-hosted') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'ubuntu-') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'windows-') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'macos-') && fromJSON(inputs.runs-on) || fromJSON('ERROR_RUNS_ON_REQUIERE_GRUPO_Y_CAPACIDAD') }}"
 # jq 1.8.2 (2026-06-20): 1.8.0 corrigio CVE-2024-23337, CVE-2024-53427, CVE-2025-48060. Los sha256
 # son los de `sha256sum.txt` del release oficial (gh release download jq-1.8.2 --repo jqlang/jq).
 JQ_VERSION = "jq-1.8.2"
@@ -105,23 +105,10 @@ def revisa(texto):
     else:
         if p.get("type") != "string":
             errores.append(f"input runs-on: type={p.get('type')!r} (se esperaba string)")
-        if p.get("required") != "false":
-            errores.append(f"input runs-on: required={p.get('required')!r} (se esperaba false)")
-        try:
-            d = json.loads(yaml_escalar(p.get("default", "")))
-        except ValueError:
-            d = None
-        if d != "ubuntu-latest":
-            errores.append(f"input runs-on: el default decodifica a {d!r}, no a 'ubuntu-latest'")
-
-    # 3. El fallback de la expresion.
-    m = re.search(r"fromJSON\(inputs\.runs-on \|\| '(.*?)'\)", texto)
-    try:
-        f = json.loads(m.group(1).replace("''", "'")) if m else None
-    except ValueError:
-        f = None
-    if f != "ubuntu-latest":
-        errores.append(f"el fallback de fromJSON decodifica a {f!r}, no a 'ubuntu-latest'")
+        if p.get("required") != "true":
+            errores.append("input runs-on: required debe ser true")
+        if "default" in p:
+            errores.append("input runs-on: default prohibido")
 
     # 1b. Un job en forma de mapping en linea (`  x: {runs-on: ...}`) esquiva el conteo por
     # bloques: no se admite, las recetas escriben los jobs en bloque.
@@ -186,6 +173,7 @@ IF_PROPIO = "if: steps.runner.outputs.alojado != 'true'"
 USES_PERMITIDOS = ("actions/checkout@",) + SETUP_ACTIONS
 PY_TOKEN = re.compile(r"(?<![\w-])(python\d*(?:\.\d+)?|pip3?|pip-audit|pip_audit)(?![\w-])")
 PY_LINEAS_PERMITIDAS = {
+    "python3 -I - <<'PYTHON'",
     # requisitos (propio)
     """py=$(python3 -I -c 'import sys, venv, ensurepip; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null) || py=\"\"""",
     # Python del runner (propio)
@@ -505,22 +493,17 @@ def ejecuta_requisitos(texto, receta):
 
     buenas = {t: v[0] for t, v in req.items()}
     try:
-        for etiqueta, runs_on, entorno, esperado in (
-                ("alojado, runs-on vacio", "", "github-hosted", "true"),
-                ("alojado, runs-on default", '"ubuntu-latest"', "github-hosted", "true")):
-            rc, al, log = corre(runs_on, entorno, {})  # sin NADA de la imagen: alojado no lo exige
-            if rc != 0 or al != esperado:
-                errores.append(f"{etiqueta}: rc={rc} alojado={al!r} (se esperaba 0/'true') — se pierde el comportamiento alojado\n{log}")
+        for runs_on in ("", '"ubuntu-latest"', '{"group":"ci-comun","labels":["self-hosted","linux"]}'):
+            rc, al, log = corre(runs_on, "github-hosted", buenas)
+            if rc == 0 or al is not None:
+                errores.append(f"runner alojado no rechazado: {runs_on!r}")
         for etiqueta, runs_on, entorno in (
-                ("propio, self-hosted con etiqueta", '["self-hosted","makro-web"]', "self-hosted"),
-                ("propio, self-hosted con runs-on default", '"ubuntu-latest"', "self-hosted"),
-                ("propio, self-hosted con runs-on vacio", "", "self-hosted"),
-                ("propio, github-hosted con otra etiqueta", '"ubuntu-24.04"', "github-hosted"),
-                ("propio, runner.environment vacio (runner antiguo)", "", "")):
+                ("propio con capacidad", '{"group":"ci-comun","labels":["self-hosted","linux"]}', "self-hosted"),
+                ("propio antiguo", '{"group":"ci-comun","labels":["self-hosted","linux"]}', "")):
             rc, al, log = corre(runs_on, entorno, buenas)
             if rc != 0 or al != "false":
                 errores.append(f"{etiqueta}, imagen completa: rc={rc} alojado={al!r} (se esperaba 0/'false')\n{log}")
-        for t, (buena, malas) in req.items():
+        for t, (_buena, malas) in req.items():
             sin = {x: v for x, v in buenas.items() if x != t}
             rc, al, log = corre('["self-hosted"]', "self-hosted", sin)
             if rc == 0 or al is not None or "README § Runner propio" not in log or "Modo RUNNER PROPIO" not in log:
@@ -668,26 +651,26 @@ for nombre in RECETAS:
     errs = revisa(texto)
     afirma(not errs, "cumple el contrato runs-on", "NO cumple:\n      - " + "\n      - ".join(errs))
     conducta = ejecuta_requisitos(texto, nombre)
-    afirma(not conducta, "requisitos: alojado no exige nada; propio exige la imagen y falla cerrado",
+    afirma(not conducta, "requisitos: rechaza alojado; propio exige la imagen y falla cerrado",
            "requisitos NO se comportan:\n      - " + "\n      - ".join(conducta))
     if errs or conducta:
         continue  # los mutantes solo significan algo sobre una receta que cumple
 
-    def detecta(mut):
+    def detecta(mut, nombre=nombre):
         return bool(revisa(mut) or ejecuta_requisitos(mut, nombre))
 
     mutantes = {
         "runs-on: ubuntu-latest literal en el job":
             texto.replace("runs-on: " + RUNS_ON_ESPERADO, "runs-on: ubuntu-latest", 1),
-        "default cambiado a ubuntu-22.04":
-            texto.replace("""default: '"ubuntu-latest"'""", """default: '"ubuntu-22.04"'""", 1),
-        "fallback `||` quitado de la expresion":
-            texto.replace(""" || '"ubuntu-latest"'""", "", 1),
+        "default hosted reintroducido":
+            texto.replace("        required: true", "        required: true\n        default: '\"ubuntu-latest\"'", 1),
+        "fallback hosted reintroducido":
+            texto.replace(RUNS_ON_ESPERADO, "${{ fromJSON(inputs.runs-on || '\"ubuntu-latest\"') }}", 1),
         "job extra con runs-on literal":
             texto.rstrip("\n").replace("\njobs:\n",
                 "\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - name: \"🧰 Requisitos del runner\"\n        run: true\n", 1) + "\n",
-        "required: false quitado":
-            re.sub(r"(\n      runs-on:\n(?:        .*\n)*?)        required: false\n", r"\1", texto, count=1),
+        "required: true quitado":
+            re.sub(r"(\n      runs-on:\n(?:        .*\n)*?)        required: true\n", r"\1", texto, count=1),
         "paso de requisitos movido de primero":
             re.sub(r"      - name: \"?🧰 Requisitos del runner.*?(?=\n      - name:)", "", texto, count=1, flags=re.S),
     }
@@ -719,13 +702,11 @@ for nombre in RECETAS:
                 con_if, f"        if: always()\n        uses: {accion}", 1),
         })
     mutantes.update({
-        "modo alojado perdido (siempre propio)": texto.replace(
-            """'"ubuntu-latest"') alojado=true ;;""", """'"ubuntu-latest"') alojado=false ;;""", 1),
+        "rechazo alojado omitido": texto.replace(
+            'echo "::error::runner alojado prohibido — ver README § Runner propio."; exit 1', 'true', 1),
         "modo propio perdido (siempre alojado)": texto.replace("          alojado=false\n", "          alojado=true\n", 1),
-        "modo ignora el input runs-on": texto.replace(
-            """case "$RUNS_ON_INPUT" in ''|'"ubuntu-latest"') alojado=true ;; esac""", "alojado=true", 1),
         "modo ignora runner.environment": texto.replace(
-            'if [ "$RUNNER_ENV" = "github-hosted" ]; then', "if true; then", 1),
+            'if [ "$RUNNER_ENV" = "github-hosted" ]; then', "if false; then", 1),
         "RUNNER_ENV desde otra fuente": texto.replace(
             "RUNNER_ENV: ${{ runner.environment }}", "RUNNER_ENV: github-hosted", 1),
         "requisitos sin id: runner": texto.replace("        id: runner\n", "        id: reqs\n", 1),
@@ -738,7 +719,7 @@ for nombre in RECETAS:
         "Python del runner sin if (pisa el python alojado)": texto.replace(f"        {IF_PROPIO}\n", "", 1),
     })
     # Ronda 1 de refutacion: las formas que sobrevivian, y las de H3/H4/H1.
-    paso_extra = lambda cuerpo: texto.replace(
+    paso_extra = lambda cuerpo, texto=texto: texto.replace(
         "      - name: Checkout\n", f"      - name: extra\n{cuerpo}\n\n      - name: Checkout\n", 1)
     instalar = ("          /tmp/venv-semgrep/bin/pip install" if "venv-semgrep" in texto
                 else "        run: pip install --require-hashes")
@@ -944,7 +925,7 @@ def revisa_selftest(st):
     return errs
 
 
-st = (RAIZ / ".github" / "workflows" / "selftest.yml").read_text(encoding="utf-8")
+st = (RAIZ / "tests" / "fixtures" / "snapshot-checks.yml").read_text(encoding="utf-8")
 e = revisa_selftest(st)
 afirma(not e, f"corre las decisiones de jq con el jq fijado ({JQ_VERSION})",
        "selftest NO prueba con el jq fijado:\n      - " + "\n      - ".join(e))

@@ -58,39 +58,49 @@ jobs:
 
 ## Runner propio (input `runs-on`)
 
-Todo job de las tres recetas elige su runner con el input `runs-on` (JSON). Sin pasarlo, corre en
-`ubuntu-latest` como siempre. Con runners propios (fabrica#2425: al agotarse el tope de gasto de
-Actions, el job `seguridad` de makro_web no podía correr y `ci-ok` quedaba en rojo):
+Todo job requiere un destino explícito JSON con el grupo `ci-comun` y etiquetas
+self-hosted de capacidad. El input es obligatorio, sin default: omitido, vacío,
+JSON inválido, etiquetas alojadas u otro grupo se rechazan antes de asignar runner.
+No existe fallback a runners alojados. La admisión al grupo es administrativa y
+externa al YAML del candidato; este repositorio público no debe tener acceso.
 
 ```yaml
 jobs:
   seguridad:
     uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@<sha-40>
     with:
-      runs-on: ${{ vars.RUNS_ON }}     # p. ej. ["self-hosted","makro-web"]
-      tooling-ref: <sha-40>            # el MISMO sha que el `uses:`
+      runs-on: '{"group":"ci-comun","labels":["self-hosted","linux","x64","node"]}'
+      tooling-ref: <sha-40> # el MISMO SHA revisado que el uses
 ```
 
-Si `vars.RUNS_ON` no está definida llega `''`, y la receta lo trata como `"ubuntu-latest"`: el
-default de un input **no** se aplica a un valor pasado vacío, así que sin ese fallback `fromJSON('')`
-rompería el job.
+Tras el checkout se verifica el caller sin red, lazy-fetch, reparación ni borrado.
+Se rechazan marcas partialClone/promisor/filter por presencia (también false/vacío),
+`.promisor`, alternates, shallow, HEAD inválido y objetos alcanzables ausentes de
+refs locales/HEAD. El tooling se comprueba aparte, con su propia profundidad 1.
+Un clon heredado parcial falla cerrado; no se intenta limpiarlo desde la receta.
 
-El valor es **JSON**, no una etiqueta suelta: `'"ubuntu-latest"'` o `'["self-hosted","makro-web"]'`.
-Escribir `runs-on: ubuntu-latest` (sin las comillas de JSON) hace fallar el job al arrancar; falla
-con ruido, no en silencio, pero es la trampa obvia porque el input se llama igual que la clave.
+### Validación de candidatos
+
+No hay workflows públicos de selftest ni ROLE-REVIEW ejecutando el candidato, ni en
+runners propios ni alojados. Las tres recetas solo exponen `workflow_call`.
+La validación ejecutable se hace por **promoción humana de snapshot revisado**:
+revisar todo el diff y aprobar SHA completo, importar recetas, scripts, locks y
+fixtures a una rama protegida de validación privada admitida en el grupo común.
+Un SHA nuevo invalida la aprobación. No promover automáticamente YAML, artifacts
+ni caches de ejecuciones públicas. Una llamada relativa debe resolver las recetas
+del snapshot aprobado; un checkout posterior no cambia el workflow ya resuelto.
+Registrar SHA de origen, SHA del snapshot y digest; sin credenciales de promoción
+ni reporte en el job del candidato. El reporte externo debe ligarse al SHA exacto.
+`tests/fixtures/snapshot-checks.yml` es un fixture estático, sin jobs ni runner,
+para mantener comprobables los pins de jq; no es un workflow ejecutable público.
+Las pruebas de destino omitido/vacío son estáticas, nunca canarios hosted.
+Los checks de distribución y su política necesitan acordarse antes de publicar.
 
 ### Qué tiene que traer el runner
 
-**En un runner propio la receta no descarga intérpretes: falla cerrada.** `setup-python`,
-`setup-node` y `shivammathur/setup-php` solo corren en un runner **alojado** de GitHub con el
-`runs-on` por defecto (`''` o `"ubuntu-latest"`). Ahí la imagen ya trae las versiones y el
-comportamiento no cambia. En cualquier otro caso (`runner.environment` distinto de `github-hosted`,
-**o** un `runs-on` distinto del default) no se llaman. La razón: sin la versión ya instalada,
-descargan y ejecutan código **sin checksum**. `setup-php` baja un `install.sh` de
-`releases/latest` (con alternativas en `@main`): fijar el SHA de la action no fija ese código
-transitivo. `setup-python` baja y ejecuta un `setup.sh` y luego hace
-`pip install --upgrade pip` sin versión ni hashes. `setup-node` baja el tarball de Node. Por eso
-**la imagen del runner tiene que traer los intérpretes** en la versión que pide la receta.
+La imagen debe traer los intérpretes en la versión pedida. La receta rechaza
+`runner.environment=github-hosted` y nunca habilita setup de intérpretes alojados.
+Sin intérprete o venv/ensurepip compatible, falla cerrada remitiendo a esta sección.
 
 El primer paso de cada job (`🧰 Requisitos del runner`) decide el modo y comprueba las filas marcadas
 **(c)**. Si falta algo, falla con la lista y remite aquí, en vez de dejar que un paso posterior se
@@ -146,15 +156,14 @@ conducta del paso de requisitos, que ejecuta con `sh -e` como Actions.
 jq era la dependencia oculta: ubuntu-latest lo trae de serie y los gates de composer audit y
 pip-audit deciden con él. Es 1.8.2 y no el 1.7.1 de ubuntu-24.04 porque el binario upstream 1.7.1 no
 lleva los arreglos de CVE-2024-23337, CVE-2024-53427 y CVE-2025-48060 (ni los posteriores hasta
-1.8.2; el paquete de Ubuntu puede llevarlos por backport). `selftest` repite con ese pin las
-expresiones de decisión de composer audit; el conteo de pip-audit lo ejercita el job python.
+1.8.2; el paquete de Ubuntu puede llevarlos por backport). El snapshot revisado debe repetir con ese pin las
+expresiones de decisión de composer audit y el conteo de pip-audit de la receta Python.
 
 Docker y gitleaks no hacen falta: los secretos los escanea Semgrep.
 
-> **Seguridad del runner.** `runs-on` decide en qué máquina corre el gate, con el fuente del
-> repo en disco. Un runner propio **no** debe ejecutar `pull_request` de forks en repos públicos
-> (cualquiera podría correr código en él), y `vars.RUNS_ON` debe apuntar solo a runners del
-> mismo dueño que el repo.
+> **Seguridad del runner.** El grupo no admite este repositorio público ni código
+> público no revisado. Cambiar `if`, `runs-on` o los triggers del candidato no debe
+> conceder acceso administrativo al grupo. La selección por capacidad no es autorización.
 
 ## Garantías de seguridad / costo (por qué no se dispara solo ni cobra de más)
 

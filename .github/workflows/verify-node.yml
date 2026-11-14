@@ -18,14 +18,9 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: >-
-          runs-on del job, en JSON (fabrica#2425). Runner propio: '["self-hosted","makro-web"]';
-          lo normal es pasar la variable de repo vars.RUNS_ON. Default '"ubuntu-latest"' = el runner de
-          siempre. Vacio cuenta como default: un `vars.RUNS_ON` sin definir llega como '' (el
-          default de un input NO se aplica a un valor pasado vacio). Requisitos: README § Runner propio.
+        description: 'Destino explícito JSON: grupo ci-comun y etiquetas de capacidad self-hosted. Vacío u omitido se rechaza.'
         type: string
-        required: false
-        default: '"ubuntu-latest"'
+        required: true
       gated-branches:
         description: 'Patrones extra de ramas gateadas (espacio-separados, glob). Default siempre: main master *_prod'
         type: string
@@ -62,8 +57,7 @@ permissions:
 jobs:
   verify:
     name: 🔒 secrets + SAST + deps (Node)
-    # `|| '"ubuntu-latest"'`: ver la descripcion del input — sin el, `vars.RUNS_ON` vacio rompe el job.
-    runs-on: ${{ fromJSON(inputs.runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ fromJSON(inputs.runs-on).group == 'ci-comun' && startsWith(toJSON(fromJSON(inputs.runs-on).labels), '[') && contains(fromJSON(inputs.runs-on).labels, 'self-hosted') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'ubuntu-') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'windows-') && !contains(toJSON(fromJSON(inputs.runs-on).labels), 'macos-') && fromJSON(inputs.runs-on) || fromJSON('ERROR_RUNS_ON_REQUIERE_GRUPO_Y_CAPACIDAD') }}
     timeout-minutes: 15
     steps:
       # ── Requisitos del runner (fabrica#2425) ─────────────────────────────────────────────
@@ -96,11 +90,10 @@ jobs:
           version_ok() { p=${2%.x}; [ -n "$1" ] && [ -n "$p" ] && case "$1." in "$p".*) true ;; *) false ;; esac; }
           alojado=false
           if [ "$RUNNER_ENV" = "github-hosted" ]; then
-            case "$RUNS_ON_INPUT" in ''|'"ubuntu-latest"') alojado=true ;; esac
+            echo "::error::runner alojado prohibido — ver README § Runner propio."; exit 1
           fi
           if [ "$alojado" != true ]; then
-            # `|| x=""` en cada captura: Actions corre `shell: sh` como `sh -e`, y una asignacion
-            # que falla cortaria el paso ANTES del mensaje que remite al README.
+                    # que falla cortaria el paso ANTES del mensaje que remite al README.
             py=$(python3 -I -c 'import sys, venv, ensurepip; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null) || py=""
             version_ok "$py" "$PY_VERSION" || falta="$falta python3-$PY_VERSION-con-venv(hay:${py:-nada})"
             nv=$(node --version 2>/dev/null | sed 's/^v//') || nv=""
@@ -133,6 +126,61 @@ jobs:
           # merge-base, cat-file y --baseline-commit, todo local.
           persist-credentials: false
           fetch-depth: 0        # historia y blobs completos: semgrep --baseline-commit necesita ambos
+      - name: Verificar clon completo offline
+        shell: bash
+        run: |
+          python3 -I - <<'PYTHON'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if (not workspace.is_absolute() or '..' in workspace.parts
+                  or any(ruta.is_symlink() for ruta in (workspace, *workspace.parents))):
+              raise SystemExit('::error::workspace inseguro')
+          git_dir = workspace / '.git'
+          if not git_dir.is_dir() or git_dir.is_symlink():
+              raise SystemExit('::error::se exige un directorio Git local completo')
+          if any(os.environ.get(clave) for clave in ('GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_OBJECT_DIRECTORY')):
+              raise SystemExit('::error::almacén de objetos externo no autorizado')
+          entorno = {clave: valor for clave, valor in os.environ.items()
+                     if not clave.startswith('GIT_') or clave.startswith('GIT_CONFIG_')}
+          entorno.update(GIT_NO_LAZY_FETCH='1', GIT_TERMINAL_PROMPT='0', GIT_ALLOW_PROTOCOL='',
+                         GIT_NO_REPLACE_OBJECTS='1', GIT_OPTIONAL_LOCKS='0')
+
+          def git(*argumentos):
+              return subprocess.run(['git', '-C', str(workspace), '-c', 'core.hooksPath=/dev/null',
+                                     '-c', 'core.fsmonitor=false', *argumentos],
+                                    env=entorno, capture_output=True, text=True, timeout=60)
+
+          patron = r'^(remote\..*\.(promisor|partialclonefilter)|extensions\.partialclone)$'
+          configuracion = git('config', '--includes', '--name-only', '--get-regexp', patron)
+          if configuracion.returncode != 1:
+              raise SystemExit('::error::repo parcial: configuración promisor/filtro presente o ilegible')
+          config_worktree = git_dir / 'config.worktree'
+          if config_worktree.exists():
+              configuracion = git('config', '--file', str(config_worktree), '--includes',
+                                  '--name-only', '--get-regexp', patron)
+              if configuracion.returncode != 1:
+                  raise SystemExit('::error::repo parcial: configuración worktree presente o ilegible')
+
+          def error_lectura(error):
+              raise error
+
+          for directorio, carpetas, archivos in os.walk(git_dir, onerror=error_lectura):
+              for nombre in carpetas + archivos:
+                  ruta = Path(directorio) / nombre
+                  if ruta.is_symlink() or nombre.endswith('.promisor') or nombre in ('alternates', 'http-alternates', 'commondir'):
+                      raise SystemExit('::error::repo parcial: .promisor o almacenamiento externo no autorizado')
+          shallow = git('rev-parse', '--is-shallow-repository')
+          if shallow.returncode or shallow.stdout.strip() != 'false':
+              raise SystemExit('::error::historia shallow o ilegible')
+          objetos = git('rev-list', '--objects', '--missing=print', '--all', 'HEAD')
+          ausentes = [linea for linea in objetos.stdout.splitlines() if linea.startswith('?')]
+          if objetos.returncode or ausentes:
+              raise SystemExit('::error::verificación final --all: objetos ausentes o historia ilegible')
+          print('Repo completo verificado sin lazy-fetch ni red')
+          PYTHON
 
       # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi 3.12 esta en el tool cache.
       - name: Setup Python (para Semgrep)
@@ -171,6 +219,62 @@ jobs:
           ref: ${{ inputs.tooling-ref }}
           path: .watson-ci-tooling
           persist-credentials: false
+          fetch-depth: 1
+      - name: Verificar tooling offline (profundidad 1)
+        shell: bash
+        run: |
+          python3 -I - <<'PYTHON'
+          import os
+          import subprocess
+          from pathlib import Path
+
+          workspace = Path(os.environ['GITHUB_WORKSPACE']) / '.watson-ci-tooling'
+          if (not workspace.is_absolute() or '..' in workspace.parts
+                  or any(ruta.is_symlink() for ruta in (workspace, *workspace.parents))):
+              raise SystemExit('::error::workspace inseguro')
+          git_dir = workspace / '.git'
+          if not git_dir.is_dir() or git_dir.is_symlink():
+              raise SystemExit('::error::se exige un directorio Git local completo')
+          if any(os.environ.get(clave) for clave in ('GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_OBJECT_DIRECTORY')):
+              raise SystemExit('::error::almacén de objetos externo no autorizado')
+          entorno = {clave: valor for clave, valor in os.environ.items()
+                     if not clave.startswith('GIT_') or clave.startswith('GIT_CONFIG_')}
+          entorno.update(GIT_NO_LAZY_FETCH='1', GIT_TERMINAL_PROMPT='0', GIT_ALLOW_PROTOCOL='',
+                         GIT_NO_REPLACE_OBJECTS='1', GIT_OPTIONAL_LOCKS='0')
+
+          def git(*argumentos):
+              return subprocess.run(['git', '-C', str(workspace), '-c', 'core.hooksPath=/dev/null',
+                                     '-c', 'core.fsmonitor=false', *argumentos],
+                                    env=entorno, capture_output=True, text=True, timeout=60)
+
+          patron = r'^(remote\..*\.(promisor|partialclonefilter)|extensions\.partialclone)$'
+          configuracion = git('config', '--includes', '--name-only', '--get-regexp', patron)
+          if configuracion.returncode != 1:
+              raise SystemExit('::error::repo parcial: configuración promisor/filtro presente o ilegible')
+          config_worktree = git_dir / 'config.worktree'
+          if config_worktree.exists():
+              configuracion = git('config', '--file', str(config_worktree), '--includes',
+                                  '--name-only', '--get-regexp', patron)
+              if configuracion.returncode != 1:
+                  raise SystemExit('::error::repo parcial: configuración worktree presente o ilegible')
+
+          def error_lectura(error):
+              raise error
+
+          for directorio, carpetas, archivos in os.walk(git_dir, onerror=error_lectura):
+              for nombre in carpetas + archivos:
+                  ruta = Path(directorio) / nombre
+                  if ruta.is_symlink() or nombre.endswith('.promisor') or nombre in ('alternates', 'http-alternates', 'commondir'):
+                      raise SystemExit('::error::repo parcial: .promisor o almacenamiento externo no autorizado')
+          shallow = git('rev-parse', '--is-shallow-repository')
+          if shallow.returncode or shallow.stdout.strip() not in ('true', 'false'):
+              raise SystemExit('::error::historia shallow o ilegible')
+          objetos = git('rev-list', '--objects', '--missing=print', '--all', 'HEAD')
+          ausentes = [linea for linea in objetos.stdout.splitlines() if linea.startswith('?')]
+          if objetos.returncode or ausentes:
+              raise SystemExit('::error::verificación final --all: objetos ausentes o historia ilegible')
+          print('Repo completo verificado sin lazy-fetch ni red')
+          PYTHON
 
       - name: Instalar Semgrep (versión pineada)
         # --require-hashes: TODAS las deps transitivas pineadas por hash (tools/requirements-semgrep.txt).
