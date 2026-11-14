@@ -136,7 +136,7 @@ jobs:
           echo "alojado=$alojado" >> "$GITHUB_OUTPUT"
           echo "runner OK: ${RUNNER_ENV:-?} alojado=$alojado $(uname -m) · $(git --version)"
 
-      # fetch-depth: 0 => historia completa. Semgrep --baseline-commit necesita que el
+      # Sin filtros parciales: fetch-depth: 0 => historia y blobs completos. Semgrep --baseline-commit necesita que el
       # commit baseline exista localmente para el diff. Con depth:1 no hay merge-base.
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -147,7 +147,6 @@ jobs:
           # merge-base, cat-file y --baseline-commit, todo local.
           persist-credentials: false
           fetch-depth: 0
-          filter: blob:none   # grafo completo para merge-base; blobs on-demand (barato en repos grandes)
 
       # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi 3.12 esta en el tool cache.
       - name: Setup Python (para Semgrep)

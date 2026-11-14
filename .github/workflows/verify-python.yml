@@ -135,8 +135,7 @@ jobs:
           # transitivas no estan pineadas por hash. Nada aqui usa el token para git: solo
           # merge-base, cat-file y --baseline-commit, todo local.
           persist-credentials: false
-          fetch-depth: 0        # historia completa: semgrep --baseline-commit necesita el diff
-          filter: blob:none     # grafo de commits para merge-base; blobs on-demand (barato en repos grandes)
+          fetch-depth: 0        # historia y blobs completos: semgrep --baseline-commit necesita ambos
 
       # Solo en runner ALOJADO (ver «Requisitos del runner»): ahi la version esta en el tool cache.
       - name: Setup Python
