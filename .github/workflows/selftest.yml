@@ -91,6 +91,12 @@ jobs:
       - name: Excepciones de auditoría — decisión sobre corpus real
         run: bash tests/audit-exceptions.test.sh
 
+      # Excepciones con caducidad del paso `npm audit` de verify-node (docs/SEGURIDAD-DEPENDENCIAS.md
+      # del repo que llama). Corre el MISMO script que carga la receta, sobre una captura real de
+      # npm audit; incluye vencida, paquete distinto, tabla mal formada y audit sin JSON.
+      - name: Excepciones de npm audit — vigente, vencida, ajena, mal formada
+        run: bash tests/npm-audit-excepciones.test.sh
+
       # Un tag no puede prometer lo que no contiene. Prometido el 2026-08-07 tras el primer
       # reporte, se quedó en el backlog, y el 2026-08-11 volvió a morder con `v3` — que no
       # perdió un archivo sino el DIRECTORIO entero de acciones.

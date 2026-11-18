@@ -12,7 +12,8 @@ name: verify-node (reusable)
 #       uses: dwadrian/watson-ci/.github/workflows/verify-node.yml@v2
 #
 # MODELO v2: secrets siempre bloquea · SAST bloquea lo NUEVO vs baseline · npm audit siempre
-# bloquea high/critical.
+# bloquea high/critical, salvo las excepciones CON FECHA de la tabla «Excepciones vigentes» de
+# docs/SEGURIDAD-DEPENDENCIAS.md del repo que llama (si la tiene; ver README).
 
 on:
   workflow_call:
@@ -218,8 +219,19 @@ jobs:
 
       # El checkout del tooling se borra ANTES de escanear: si no, semgrep analizaría el
       # código de la receta como si fuera del repo auditado.
+      # Antes de borrarlo se saca UN archivo: el filtro de excepciones de `npm audit` (más abajo). Va
+      # fuera del workspace ($RUNNER_TEMP) para que semgrep no lo escanee y para que el repo
+      # auditado no pueda sustituirlo: el código que decide viene del tooling-ref, del repo
+      # auditado solo se lee la TABLA de excepciones. Un tooling-ref anterior a este archivo no lo
+      # trae: entonces no se copia y el audit corre como siempre.
       - name: Limpiar el checkout del tooling
-        run: rm -rf .watson-ci-tooling
+        run: |
+          set -eu
+          if [ -f .watson-ci-tooling/tools/npm-audit-excepciones.mjs ]; then
+            mkdir -p "$RUNNER_TEMP/watson-ci-filtros"
+            cp .watson-ci-tooling/tools/npm-audit-excepciones.mjs "$RUNNER_TEMP/watson-ci-filtros/"
+          fi
+          rm -rf .watson-ci-tooling
 
       - name: 🔑 Secrets scan (bloquea siempre)
         run: semgrep scan --config "p/secrets" --error --quiet --disable-version-check --metrics=off --timeout 120 .
@@ -302,7 +314,24 @@ jobs:
             echo "sin lockfile — npm install (reproducibilidad reducida)"
             npm install --ignore-scripts --no-audit --no-fund
           fi
-          npm audit --audit-level=high
+          # Excepciones con fecha de caducidad (fuente única: la tabla «Excepciones vigentes» de
+          # docs/SEGURIDAD-DEPENDENCIAS.md del repo que llama). SIN esa tabla —sin archivo, o sin
+          # la sección— el comando es EXACTAMENTE el de siempre. CON ella decide
+          # tools/npm-audit-excepciones.mjs: solo high/critical, una excepción exime si casa aviso
+          # Y paquete y su fecha de revisión está entre hoy y hoy+90 días; vencida o mal formada,
+          # rojo; si npm audit no da JSON, rojo.
+          FILTRO="$RUNNER_TEMP/watson-ci-filtros/npm-audit-excepciones.mjs"
+          DOC=docs/SEGURIDAD-DEPENDENCIAS.md
+          hay=3
+          if [ -f "$FILTRO" ]; then hay=0; node "$FILTRO" --hay-tabla "$DOC" || hay=$?; fi
+          case "$hay" in
+            3) npm audit --audit-level=high ;;
+            0)
+              # rc 1 de npm es el camino normal con hallazgos: decide el filtro por la FORMA del JSON.
+              npm audit --json --audit-level=high > "$RUNNER_TEMP/watson-ci-filtros/audit.json" || true
+              node "$FILTRO" --tabla "$DOC" --audit "$RUNNER_TEMP/watson-ci-filtros/audit.json" ;;
+            *) echo "::error::$DOC: la tabla «Excepciones vigentes» no se pudo leer; no se audita sin saber qué eximir."; exit 1 ;;
+          esac
 
       - name: 🧪 Tests (opcional, solo si se pasa test-command)
         if: ${{ inputs.test-command != '' && steps.alcance.outputs.solo_docs != 'true' }}

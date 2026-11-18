@@ -47,6 +47,25 @@ _Sin trabajo activo declarado. El siguiente que arranque se mueve aquí._
   hay que declararla, no heredarla por omisión.
   · origen: feedback de makro_logistica, 2026-08-06
 
+- [ ] **Endurecer `tools/npm-audit-excepciones.mjs` (menores de la revision independiente de #7)**:
+  (a) las filas dentro de `<!-- -->` o de bloques de codigo se leen como excepcion aunque no se vean
+  en el diff renderizado del PR; (b) `--hay-tabla` sale con 2 si `docs/SEGURIDAD-DEPENDENCIAS.md`
+  pesa mas de 256 KB aunque no tenga la seccion (el repo pasaria a rojo en vez de «como siempre»);
+  (c) la columna Severidad de la tabla no se compara con la real: una fila que dice HIGH exime
+  tambien un aviso critical del mismo GHSA y paquete; (d) el `case` de bash de `verify-node.yml`
+  (3 = sin tabla, 0 = con tabla, otro = error) no tiene prueba propia: el test solo ejercita el `.mjs`.
+  Ronda 2: (e) el GHSA de la `url` no esta anclado al final de la ruta: con una url
+  `.../advisories/GHSA-X?x=GHSA-Y` y una fila GHSA-Y, un aviso critical distinto sale con rc=0
+  (reproducido; npm no genera urls asi, haria falta un registro manipulado) → anclar a
+  `/advisories/(GHSA-…)$`; (f) la exencion compara con `via.name` y no con la clave del paquete;
+  (g) `toca`/`base`/`sev` son objetos normales y `v in V` ve claves del prototipo
+  (`"constructor"`): hoy acaba en exit 2 (falla cerrado) → `Object.create(null)` + `Object.hasOwn`;
+  (h) documentar la version minima de Node (>= 16.9, por `Object.hasOwn`) y npm >= 7 en el README;
+  (i) antes de mover el alias `v2`, buscar en la flota docs con un encabezado «Excepciones vigentes»
+  de otra forma: pasarian a rojo (exit 2) en vez de «como siempre».
+  Ninguno abre un hueco que el control humano de la fila (tope de 90 dias, log y resumen) no cubra.
+  · origen: `docs/reviews/ROLE-REVIEW-2026-11-18-npm-audit-excepciones.md`
+
 ## Bloqueado
 
 
