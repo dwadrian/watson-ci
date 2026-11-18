@@ -50,17 +50,24 @@ jobs:
   python:
     uses: ./.github/workflows/verify-python.yml
     with:
-      # Las vulns del cierre de semgrep 1.184.0 (la ultima, 2026-11-06), que pinea EXACTO
-      # `mcp==1.29.0` (4 CVE, arreglo en 1.30.0) y `opentelemetry-api~=1.37.0` (1 CVE, arreglo
-      # en 1.45.1). NO se pueden arreglar aqui:
-      # semgrep lo pinea EXACTO, asi que forzar una version mas nueva rompe su contrato.
-      # Se declaran UNA A UNA, no con un interruptor global, y se revisan en cada bump de
-      # semgrep — si el pin sube, esta linea se borra.
+      # Las 6 vulns del cierre de semgrep 1.184.0 (ultimo pin regenerado, 2026-11-06), que pinea
+      # EXACTO `mcp==1.29.0` (4 CVE, arreglo en 1.30.0) y `opentelemetry-api~=1.37.0` (2 CVE:
+      # CVE-2026-114603, arreglo en 1.45.1, y CVE-2026-126360 / GHSA-mf5v-w3w3-f6cg, publicado el
+      # 2026-11-12, arreglo en 1.45.2). NO se pueden arreglar aqui: semgrep fija `mcp==1.29.0` y
+      # `opentelemetry-api~=1.37.0` (solo 1.37.x), asi que forzar una version mas nueva rompe su contrato. Medido 2026-11-18: semgrep 1.186.0 (la ultima
+      # en PyPI) conserva los mismos pins.
+      # Se declaran UNA A UNA, no con un interruptor global.
+      #
+      # REVISAR A MAS TARDAR EL 2026-12-02, o antes en cuanto semgrep publique una version cuyo
+      # `Requires-Dist` admita `mcp>=1.30.0` y `opentelemetry-api>=1.45.2`: entonces se regenera
+      # tools/requirements-semgrep.txt (receta en su cabecera) y esta linea se borra. Estas
+      # excepciones NO caducan solas (`tools/audit-exceptions.sh` no esta cableado a las recetas, ver
+      # docs/reviews/ROLE-REVIEW-2026-11-06-pins-deps.md): la fecha la vigila una persona.
       #
       # Ojo al alcance: esto aplica SOLO al selftest de watson-ci, que se audita a si mismo.
       # Ningun caller hereda estas excepciones; en un caller, tools/requirements-*.txt ni
       # siquiera existe (la receta hace checkout del repo llamador, no de este).
-      pip-audit-ignore-vuln: 'CVE-2026-59951,CVE-2026-116684,CVE-2026-116685,CVE-2026-116686,CVE-2026-114603'
+      pip-audit-ignore-vuln: 'CVE-2026-59951,CVE-2026-116684,CVE-2026-116685,CVE-2026-116686,CVE-2026-114603,CVE-2026-126360'
 
   # 2. Las recetas DECIDEN BIEN. Esto es lo que faltaba: "arranca" y "decide bien" son cosas
   #    distintas, y v2.2.0 cambio la segunda sin que nada lo verificara.

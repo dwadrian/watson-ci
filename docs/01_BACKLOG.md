@@ -57,6 +57,16 @@ _Sin trabajo activo declarado. El siguiente que arranque se mueve aquí._
   sigue exactamente igual.
   · origen: `docs/bitacoras/BITACORA-2026-08-05-paths-solo-docs.md`
 
+- [ ] **Quitar las 6 excepciones de pip-audit del selftest cuando semgrep suba sus pins** — el
+  selftest declara `mcp` 1.29.0 (4 CVE) y `opentelemetry-api` 1.37.0 (CVE-2026-114603 y
+  CVE-2026-126360, esta ultima del 2026-11-12) en `.github/workflows/selftest.yml`. Sus parches
+  existen (mcp 1.30.0, opentelemetry-api 1.45.2) pero semgrep (hasta 1.186.0) fija `mcp==1.29.0` y
+  `opentelemetry-api~=1.37.0`. **Revisar a mas tardar el 2026-12-02**: si hay semgrep nuevo, regenerar
+  `tools/requirements-semgrep.txt` y borrar la linea; si no, renovar la fecha aqui. Las excepciones
+  no caducan solas (no estan cableadas a `tools/audit-exceptions.sh`). **Desbloquea: upstream
+  (semgrep).**
+  · origen: `docs/reviews/ROLE-REVIEW-2026-11-18-selftest-python-otel.md`
+
 ## Decisión del dueño
 
 - [ ] **¿Endurecer también el camino ALOJADO como el propio?** (fabrica#2425, ronda 2). En runner
