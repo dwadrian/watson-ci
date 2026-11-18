@@ -1,0 +1,6 @@
+{"auditReportVersion":2,"vulnerabilities":{
+"picomatch":{"name":"picomatch","severity":"high","isDirect":false,"via":[{"source":1,"name":"picomatch","dependency":"picomatch","title":"picomatch vulnerable to ReDoS","url":"https://github.com/advisories/GHSA-fc5q-39xc-vjpf","severity":"high","range":"<=4.0.7"}],"effects":["dependiente"],"range":"<=4.0.7","nodes":["node_modules/picomatch"],"fixAvailable":false},
+"dependiente":{"name":"dependiente","severity":"high","isDirect":true,"via":["picomatch"],"effects":[],"range":"*","nodes":["node_modules/dependiente"],"fixAvailable":false},
+"ajeno":{"name":"ajeno","severity":"high","isDirect":true,"via":[{"source":2,"name":"ajeno","dependency":"ajeno","title":"ajeno: prototype pollution","url":"https://github.com/advisories/GHSA-aaaa-bbbb-cccc","severity":"high","range":"<2.0.0"}],"effects":[],"range":"<2.0.0","nodes":["node_modules/ajeno"],"fixAvailable":true},
+"mixto":{"name":"mixto","severity":"high","isDirect":true,"via":["picomatch",{"source":3,"name":"mixto","dependency":"mixto","title":"mixto: path traversal","url":"https://github.com/advisories/GHSA-dddd-eeee-ffff","severity":"high","range":"*"}],"effects":[],"range":"*","nodes":["node_modules/mixto"],"fixAvailable":false}
+},"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":4,"critical":0,"total":4}}}

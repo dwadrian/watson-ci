@@ -56,6 +56,32 @@ jobs:
       #   ya puede ejecutar lo que quiera), pero interpolar un título de PR sí lo convierte en RCE.
 ```
 
+## Excepciones de `npm audit` con caducidad (verify-node)
+
+Un HIGH sin versión corregida no puede bloquear para siempre ni apagarse con un interruptor global.
+Si el repo que llama tiene `docs/SEGURIDAD-DEPENDENCIAS.md` con una sección **«Excepciones vigentes»**,
+el paso `npm audit` la respeta; la tabla es la **única fuente** y no hay input nuevo:
+
+| Aviso (CVE o GHSA) | Paquete | Severidad | Motivo | Quién la aceptó | Fecha de revisión |
+|---|---|---|---|---|---|
+
+- Solo `high`/`critical`. El aviso se identifica por el **GHSA de la URL** que da `npm audit` (su título no cuenta
+  y el JSON no trae CVE: una fila con CVE se acepta pero queda «huérfana» y no exime; usa el GHSA).
+  Una fila exime si coincide el **aviso Y el paquete** y su fecha de revisión
+  (`AAAA-MM-DD`, UTC) es **≥ hoy y ≤ hoy+90 días**. Vencida o a más de 90 días: no exime (el log lo dice).
+- Fila mal formada (fecha inexistente, aviso que no es GHSA/CVE, comodines, columnas de menos, dos
+  encabezados) → **rojo**, no «sin excepciones». Si hay filas duplicadas manda la fecha más temprana.
+- Al eximir un aviso se **recalcula** la severidad de lo que depende de él (npm la deriva de `via`);
+  un aviso propio no exento de un dependiente sigue bloqueando.
+- Falla cerrado: sin JSON de `npm audit`, o con `.error` (p. ej. ENOLOCK), exit 2.
+- **Sin tabla** (sin archivo o sin la sección) el paso es el de siempre: `npm audit --audit-level=high`.
+- El log lista las excepciones aplicadas, vencidas y huérfanas, y las aplicadas van al resumen del run.
+- El código que decide (`tools/npm-audit-excepciones.mjs`, solo stdlib de Node) viaja con
+  `tooling-ref`; del repo auditado solo se lee la tabla. Un `tooling-ref` anterior al archivo no lo
+  trae y el paso corre como siempre. Quien edita la tabla en un PR cambia la excepción en ese mismo
+  PR: la revisión humana de esa fila es el control (por eso hay tope de 90 días y se lista en el log).
+- Pruebas: `bash tests/npm-audit-excepciones.test.sh`.
+
 ## Runner propio (input `runs-on`)
 
 Todo job de las tres recetas elige su runner con el input `runs-on` (JSON). Sin pasarlo, corre en
