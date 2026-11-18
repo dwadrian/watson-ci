@@ -5,9 +5,11 @@
 # El cierre completo con --require-hashes evita instalar artefactos no declarados.
 #
 # semgrep 1.184.0 permite mcp 1.29.0: se retiran las tres excepciones del antiguo mcp 1.23.3.
-# BLOQUEO (2026-11-06): quedan 5 vulnerabilidades en mcp 1.29.0 y opentelemetry-api 1.37.0.
-# Sus parches publicados (1.30.0 y 1.45.1) no satisfacen las restricciones de semgrep.
-# No se fuerzan versiones incompatibles; las 5 se declaran una a una en selftest.yml (solo el autotest).
+# BLOQUEO (2026-11-06; ampliado 2026-11-18): quedan 6 vulnerabilidades en mcp 1.29.0 y
+# opentelemetry-api 1.37.0. Sus parches publicados (mcp 1.30.0; opentelemetry-api 1.45.1 y 1.45.2)
+# no satisfacen las restricciones de semgrep (semgrep 1.186.0 conserva los mismos pins).
+# No se fuerzan versiones incompatibles; las 6 se declaran una a una en selftest.yml (solo el
+# autotest), con fecha de revision alli.
 #
 # Regenerar (requiere uv; objetivo del CI: Python 3.12, Linux x86_64):
 #   echo 'semgrep==1.184.0' | uv pip compile --upgrade --generate-hashes --python-version 3.12 \
